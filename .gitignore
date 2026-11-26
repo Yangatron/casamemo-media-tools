@@ -1,0 +1,26 @@
+# Build outputs and downloaded inputs
+/build/
+/dist/
+
+# Local development files
+/.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cer
+*.crt
+*.der
+*.p8
+*.p12
+*.pfx
+*.keychain
+*.keychain-db
+*.mobileprovision
+*.provisionprofile

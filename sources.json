@@ -1,0 +1,50 @@
+{
+  "ffmpeg": {
+    "version": "9.1",
+    "file": "ffmpeg-9.1.tar.xz",
+    "url": "https://ffmpeg.org/releases/ffmpeg-9.1.tar.xz",
+    "sha256": "1a4d394ae63d190a526cd052eb4415c156b5c5e2df37efab41a7de0b8fde2433",
+    "directory": "ffmpeg-9.1",
+    "notices": ["COPYING.LGPLv2.1", "LICENSE.md", "CREDITS"]
+  },
+  "libwebp": {
+    "version": "1.6.0",
+    "file": "libwebp-1.6.0.tar.gz",
+    "url": "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz",
+    "sha256": "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564",
+    "directory": "libwebp-1.6.0",
+    "notices": ["COPYING", "PATENTS", "AUTHORS"]
+  },
+  "zlib": {
+    "version": "1.4",
+    "file": "zlib-1.4.tar.xz",
+    "url": "https://github.com/madler/zlib/releases/download/v1.4/zlib-1.4.tar.xz",
+    "sha256": "4f11c512053d7bab8d9e9b89bde3575add3e4c50a383b42ef6cb837035fc5a7c",
+    "directory": "zlib-1.4",
+    "notices": ["LICENSE"]
+  },
+  "lcms2": {
+    "version": "2.20",
+    "file": "lcms2-2.20.tar.gz",
+    "url": "https://github.com/mm2/Little-CMS/releases/download/lcms2.20/lcms2-2.20.tar.gz",
+    "sha256": "18ff5504fa9cc8a2b1f3591180d90ead16c8a2ea78e530523b46eab70e1ca6b9",
+    "directory": "lcms2-2.20",
+    "notices": ["LICENSE", "AUTHORS"]
+  },
+  "dav1d": {
+    "version": "1.5.5",
+    "file": "dav1d-1.5.5.tar.xz",
+    "url": "https://downloads.videolan.org/pub/videolan/dav1d/1.5.5/dav1d-1.5.5.tar.xz",
+    "sha256": "ca96b1d0ba3f01f55de7231d775892b64994ba061aaeeaaa4f662a390b3abf9e",
+    "directory": "dav1d-1.5.5",
+    "notices": ["COPYING"]
+  },
+  "exiftool": {
+    "version": "13.64",
+    "file": "Image-ExifTool-13.64.tar.gz",
+    "url": "https://downloads.sourceforge.net/project/exiftool/Image-ExifTool-13.64.tar.gz",
+    "sha256": "dcb9f6be1f6705ee826a92d1522e3fec1d0b3749cdc061b03c46873d5fe204fc",
+    "directory": "Image-ExifTool-13.64",
+    "notices": ["README"]
+  }
+}
