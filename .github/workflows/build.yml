@@ -41,6 +41,7 @@ jobs:
             patch
             curl
             diffutils
+            mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-git
             mingw-w64-ucrt-x86_64-meson

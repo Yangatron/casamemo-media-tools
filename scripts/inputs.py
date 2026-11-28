@@ -14,6 +14,12 @@ SOURCES = json.loads((ROOT / "sources.json").read_text(encoding="utf-8"))
 FFMPEG_SOURCES = ("ffmpeg", "libwebp", "zlib", "lcms2", "dav1d")
 
 
+def path_spellings(path):
+    forward = path.as_posix()
+    backward = forward.replace("/", "\\")
+    return {str(path), forward, backward, backward.replace("\\", "\\\\")}
+
+
 def sha256(path):
     digest = hashlib.sha256()
     with path.open("rb") as stream:

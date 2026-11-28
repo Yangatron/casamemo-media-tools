@@ -18,7 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from artifacts import EXIFTOOL_VERSION, FFMPEG_VERSION, binary_names, layout, verify
 from inputs import SOURCES, sha256, source_tree
-from windows_exiftool import RUNTIME_BUILD, dependency_report
+from windows_exiftool import BROTLI_VERSION, RUNTIME_BUILD, dependency_report
+from windows_perl import PERL_DLL, PERL_IDENTITY
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SIZE = (32, 24)
@@ -281,6 +282,8 @@ def windows_exiftool_checks(work, executable, source_archive):
     original = sha256(media)
     system = Path(os.environ["SystemRoot"])
     env = dict(os.environ, PATH=os.pathsep.join(map(str, (system / "System32", system))))
+    env["PERL5OPT"] = "-MCasaMemoUntrustedTestModule"
+    (work / "libgcc_s_seh-1.dll").write_bytes(b"synthetic foreign DLL")
     versions = command(executable, "-config", "", "-ver", "-v", cwd=work, env=env).decode()
     for name, version in (("Win32::FindFile", SOURCES["perl-findfile"]["version"]),
                           ("Win32API::File", "0.1203_01")):
@@ -295,7 +298,28 @@ def windows_exiftool_checks(work, executable, source_archive):
                 "Compressed JPEG XL EXIF or XMP extraction failed on a Unicode path")
         require(Path(data[0]["SourceFile"]).name == media.name, "ExifTool changed the Unicode filename")
     require(sha256(media) == original, "ExifTool changed the original JPEG XL")
-    print("Windows ExifTool compressed JPEG XL, Unicode paths and original integrity verified")
+
+    # A synthetic, explicitly selected config probes the loaded native modules
+    # through the shipped launcher in the relocated runtime.
+    configuration = work / "runtime-check.config"
+    configuration.write_text(
+        "use Config;\n"
+        "use IO::Compress::Brotli ();\n"
+        "use Compress::Raw::Zlib ();\n"
+        "use Win32::API ();\n"
+        "my $pid = Win32::API->new('kernel32', 'GetCurrentProcessId', '', 'N');\n"
+        "die 'Win32::API call failed' unless $pid && $pid->Call() == $$;\n"
+        "my $v = IO::Compress::Brotli::casamemo_native_version();\n"
+        'print "CASAMEMO ", join(q{|}, Config::local_patches(),\n'
+        'sprintf(q{%d.%d.%d}, $v >> 24, ($v >> 12) & 4095, $v & 4095),\n'
+        '$Win32::API::VERSION, Compress::Raw::Zlib::zlib_version()), "\\n";\n'
+        "1;\n", encoding="ascii",
+    )
+    probe = command(executable, "-config", configuration, "-ver", cwd=work, env=env).decode()
+    expected = f"{PERL_IDENTITY}|{BROTLI_VERSION}|0.84|{SOURCES['zlib']['version']}"
+    require(expected in probe, "Relocated ExifTool did not load the expected patched Perl and XS libraries")
+    print("Relocated Windows ExifTool verified with an isolated PATH and DLL search, Unicode and JPEG XL")
+    print(f"Loaded {PERL_DLL}, Brotli {BROTLI_VERSION}, Win32::API 0.84 and zlib {SOURCES['zlib']['version']}")
 
 
 def main():
@@ -319,8 +343,10 @@ def main():
         exiftool = None
         if platform == "windows-x64":
             exif_work = work / "ExifTool 工具"
+            staging = work / "exiftool-archive"
             with ZipFile(args.candidate / exiftool_archive) as archive:
-                archive.extractall(exif_work)
+                archive.extractall(staging)
+            staging.rename(exif_work)
             record = json.loads((exif_work / RUNTIME_BUILD).read_text(encoding="utf-8"))
             require(dependency_report(exif_work, "objdump", os.environ) == record["peImports"],
                     "Windows ExifTool packaged PE dependency report differs from the binaries")
