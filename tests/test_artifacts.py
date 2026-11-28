@@ -62,9 +62,10 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unsafe ZIP member"):
             verify_zip(symlink)
 
-    def test_windows_exiftool_has_no_distribution_filename(self):
+    def test_windows_exiftool_has_its_own_zip(self):
         windows = provisioning("windows-x64", "r1")
-        self.assertIsNone(windows["exiftool"])
+        self.assertEqual(windows["exiftool"]["asset"], "casamemo-exiftool-13.64-windows-x64-r1.zip")
+        self.assertEqual(windows["exiftool"]["checksumTarget"], "archive")
         self.assertIsNone(windows["ffprobe"])
 
     def test_macos_has_separate_ffprobe_at_the_same_version(self):
@@ -96,6 +97,13 @@ class ArchiveTests(unittest.TestCase):
                     artifacts.recipe_files()
                 self.assertIn("--no-index", git.call_args.args[0])
 
+    def test_recipe_requires_git_in_checkout(self):
+        (self.work / ".git").mkdir()
+        with patch.object(artifacts, "ROOT", self.work):
+            with patch.object(artifacts.subprocess, "run", side_effect=FileNotFoundError):
+                with self.assertRaisesRegex(ValueError, "Git executable not found on PATH"):
+                    artifacts.recipe_files()
+
     def test_recipe_rejects_symlinked_file_or_directory(self):
         outside = self.work / "outside"
         outside.mkdir()
@@ -120,9 +128,10 @@ class ArchiveTests(unittest.TestCase):
         sample = self.work / "sample"
         sample.write_bytes(b"placeholder payload")
         platform, revision = "windows-x64", "r1"
-        runtime, _, _, sources = artifacts.layout(platform, revision)
+        runtime, _, exiftool, sources = artifacts.layout(platform, revision)
         records = artifacts.notice_names() | artifacts.build_record_names(platform)
-        upstream = {f"upstream/{artifacts.SOURCES[name]['file']}" for name in artifacts.FFMPEG_SOURCES}
+        source_records = records | artifacts.EXIFTOOL_RECORDS
+        upstream = {f"upstream/{artifacts.SOURCES[name]['file']}" for name in artifacts.source_inputs(platform)}
         recipe = {f"recipe/{name}" for name in artifacts.RECIPE_PATHS}
         bins = {f"bin/{name}" for name in artifacts.binary_names(platform)}
         missing_cases = (
@@ -138,14 +147,23 @@ class ArchiveTests(unittest.TestCase):
                 folder = self.work / str(i)
                 folder.mkdir()
                 archive_zip(folder / sources, [(name, sample, 0o644)
-                            for name in records | upstream | recipe
+                            for name in source_records | upstream | recipe
                             if name != missing or not omit_source])
                 archive_zip(folder / runtime, [(name, sample, 0o755 if name in bins else 0o644)
                             for name in records | bins if name != missing or not omit_runtime])
+                archive_zip(folder / exiftool, [("placeholder", sample, 0o644)])
                 artifacts.index(folder, platform, revision, "ci-candidate")
                 with self.assertRaisesRegex(ValueError, "Missing required archive member:") as error:
                     artifacts.verify(folder)
                 self.assertIn(missing, str(error.exception))
+
+    def test_windows_exiftool_inventory_rejects_extra_files_and_traversal(self):
+        required = dict.fromkeys(artifacts.EXIFTOOL_REQUIRED, "0" * 64)
+        xs = "exiftool_files/lib/auto/Compress/Raw/Bzip2/Bzip2.xs.dll"
+        artifacts.validate_exiftool_inventory({**required, xs: "0" * 64})
+        for name in ("exiftool_files/perl.exe", "exiftool_files/lib/../private.pm"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "Windows ExifTool member"):
+                artifacts.validate_exiftool_inventory({**required, name: "0" * 64})
 
     def test_windows_release_index_is_withheld(self):
         with self.assertRaisesRegex(ValueError, "redistribution review"):

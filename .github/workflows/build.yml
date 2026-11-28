@@ -42,6 +42,7 @@ jobs:
             curl
             diffutils
             mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-git
             mingw-w64-ucrt-x86_64-meson
             mingw-w64-ucrt-x86_64-nasm
             mingw-w64-ucrt-x86_64-pkgconf
@@ -73,6 +74,7 @@ jobs:
           set -euo pipefail
           test "$MSYSTEM" = UCRT64
           test "$(uname -m)" = x86_64
+          git --version
           python -m unittest discover -s tests
           bash scripts/build.sh windows-x64
           python tests/runtime.py dist/windows-x64

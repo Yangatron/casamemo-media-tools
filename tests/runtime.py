@@ -2,12 +2,14 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 from zipfile import ZipFile
 import zlib
@@ -16,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from artifacts import EXIFTOOL_VERSION, FFMPEG_VERSION, binary_names, layout, verify
 from inputs import SOURCES, sha256, source_tree
+from windows_exiftool import RUNTIME_BUILD, dependency_report
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SIZE = (32, 24)
@@ -31,9 +34,9 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-def command(*arguments, cwd=None):
+def command(*arguments, cwd=None, env=None):
     result = subprocess.run([str(value) for value in arguments], stderr=subprocess.PIPE,
-                            stdout=subprocess.PIPE, timeout=60, cwd=cwd)
+                            stdout=subprocess.PIPE, timeout=60, cwd=cwd, env=env)
     if result.returncode:
         raise RuntimeError(f"{arguments[0]} failed ({result.returncode}): "
                            + result.stderr.decode(errors="replace"))
@@ -264,6 +267,37 @@ def media_checks(work, ffmpeg, ffprobe, exiftool):
     print("Media capability and original integrity checks passed")
 
 
+def windows_exiftool_checks(work, executable, source_archive):
+    info = SOURCES["exiftool"]
+    fixture = f"{info['directory']}/t/images/JXL2.jxl"
+    with ZipFile(source_archive) as sources, sources.open(f"upstream/{info['file']}") as source:
+        with tarfile.open(fileobj=source, mode="r:gz") as upstream:
+            with upstream.extractfile(fixture) as stream:
+                jxl = stream.read()
+    folder = work / "사진 문서"
+    folder.mkdir()
+    media = folder / "撮影-é 🏡.jxl"
+    media.write_bytes(jxl)
+    original = sha256(media)
+    system = Path(os.environ["SystemRoot"])
+    env = dict(os.environ, PATH=os.pathsep.join(map(str, (system / "System32", system))))
+    versions = command(executable, "-config", "", "-ver", "-v", cwd=work, env=env).decode()
+    for name, version in (("Win32::FindFile", SOURCES["perl-findfile"]["version"]),
+                          ("Win32API::File", "0.1203_01")):
+        require(re.search(rf"^\s+{re.escape(name)}[ \t]+{re.escape(version)}\s*$",
+                          versions, re.MULTILINE), f"ExifTool could not load {name}")
+    for target in (media.relative_to(work), folder.relative_to(work)):
+        data = json.loads(command(executable, "-config", "", "-G1", "-json", "-IFD0:Artist",
+                                  "-XMP-dc:Subject", "-ImageSize", target, cwd=work, env=env))
+        require(len(data) == 1 and data[0].get("IFD0:Artist") == "me"
+                and data[0].get("XMP-dc:Subject") == "ExifTool test"
+                and data[0].get("Composite:ImageSize") == "200x130",
+                "Compressed JPEG XL EXIF or XMP extraction failed on a Unicode path")
+        require(Path(data[0]["SourceFile"]).name == media.name, "ExifTool changed the Unicode filename")
+    require(sha256(media) == original, "ExifTool changed the original JPEG XL")
+    print("Windows ExifTool compressed JPEG XL, Unicode paths and original integrity verified")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("candidate", type=Path)
@@ -272,7 +306,7 @@ def main():
     verify(args.candidate)
     data = json.loads((args.candidate / "artifacts.json").read_text(encoding="utf-8"))
     platform = data["platform"]
-    ffmpeg_archive, ffprobe_archive, exiftool_archive, _ = layout(platform, data["revision"])
+    ffmpeg_archive, ffprobe_archive, exiftool_archive, sources = layout(platform, data["revision"])
     with tempfile.TemporaryDirectory() as directory:
         work = Path(directory)
         for filename in [ffmpeg_archive] + ([ffprobe_archive] if ffprobe_archive else []):
@@ -282,10 +316,21 @@ def main():
         for binary in binaries:
             binary.chmod(0o755)
         verify_architecture(binaries, platform)
+        exiftool = None
+        if platform == "windows-x64":
+            exif_work = work / "ExifTool 工具"
+            with ZipFile(args.candidate / exiftool_archive) as archive:
+                archive.extractall(exif_work)
+            record = json.loads((exif_work / RUNTIME_BUILD).read_text(encoding="utf-8"))
+            require(dependency_report(exif_work, "objdump", os.environ) == record["peImports"],
+                    "Windows ExifTool packaged PE dependency report differs from the binaries")
+            print("Windows ExifTool PE architecture and DLL closure verified")
+            exiftool = exif_work / "exiftool.exe"
         if args.architecture_only:
             return
-        exiftool = None
-        if exiftool_archive:
+        if platform == "windows-x64":
+            windows_exiftool_checks(work, exiftool, args.candidate / sources)
+        else:
             record = SOURCES["exiftool"]
             shutil.copyfile(args.candidate / exiftool_archive, work / record["file"])
             exiftool = source_tree("exiftool", work, work) / "exiftool"

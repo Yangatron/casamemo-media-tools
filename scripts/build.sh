@@ -12,6 +12,11 @@ cd "$root"
 python=${PYTHON:-python3}
 cache=${MEDIA_SOURCE_CACHE:-"$root/build/downloads"}
 jobs=${JOBS:-4}
+if [[ -e .git ]] && ! git --version >/dev/null; then
+    echo "Git is required in the build shell to verify the source archive inventory." >&2
+    echo "In MSYS2 UCRT64, install mingw-w64-ucrt-x86_64-git." >&2
+    exit 1
+fi
 mkdir -p build
 work=$(mktemp -d "$root/build/$platform.XXXXXXXX")
 prefix="$work/prefix"
@@ -69,6 +74,7 @@ CROSS
         export PKG_CONFIG_LIBDIR
         PKG_CONFIG_LIBDIR=$(cygpath -m "$PKG_CONFIG_LIBDIR")
         platform_flags+=(--target-os=mingw32 --enable-w32threads)
+        "$python" "$root/scripts/windows_runtime.py"
         ;;
     *)
         echo "unknown platform: $platform" >&2
@@ -152,7 +158,14 @@ meson install -C "$work/dav1d" --no-rebuild
         --enable-encoder=mjpeg,png,rawvideo,libwebp,libwebp_anim \
         --enable-muxer=image2,image2pipe,webp,rawvideo,null,framehash \
         --enable-filter=scale,format,crop,setsar,setparams,xstack,colorspace,transpose,hflip,vflip,iccgen,iccdetect,overlay,pad,split
-    make -j"$jobs" "ffmpeg$exe" "ffprobe$exe"
+    if [[ "$platform" == windows-x64 ]]; then
+        make -j"$jobs" "ffmpeg$exe" "ffprobe$exe" \
+            LDFLAGS-ffmpeg=-Wl,-Map,ffmpeg.link.map LDFLAGS-ffprobe=-Wl,-Map,ffprobe.link.map
+        "$python" "$root/scripts/windows_runtime.py" --report "$work/metadata/windows-static-linkage.txt" \
+            ffmpeg.link.map ffprobe.link.map
+    else
+        make -j"$jobs" "ffmpeg$exe" "ffprobe$exe"
+    fi
     cp "ffmpeg$exe" "ffprobe$exe" "$work/ffmpeg/"
     cp config.h config_components.h "$work/metadata/"
 )
@@ -179,5 +192,6 @@ if [[ "$platform" == windows-x64 ]]; then
     cp "$gcc_license/COPYING.RUNTIME" "$gcc_license/COPYING3" "$work/metadata/windows-notices/"
     cp "$license_root/crt/COPYING.MinGW-w64-runtime.txt" "$work/metadata/windows-notices/"
     cp "$license_root/winpthreads/COPYING" "$work/metadata/windows-notices/COPYING.winpthreads"
+    "$python" "$root/scripts/windows_exiftool.py" "$cache" "$work" "$jobs"
 fi
 "$python" "$root/scripts/artifacts.py" package "$platform" "$cache" "$work" "$root/dist/$platform" --revision "${REVISION:-r1}"

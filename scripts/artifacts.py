@@ -2,7 +2,6 @@
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import shutil
@@ -14,6 +13,11 @@ import tempfile
 import zipfile
 
 from inputs import FFMPEG_SOURCES, ROOT, SOURCES, require_hash, sha256, source_archive
+from windows_exiftool import (
+    NOTICE_FILES, PERL_DLLS, RUNTIME_BUILD, RUNTIME_DIR, WIN32_FILE_DATA,
+    WINLIBS_BASE_SOURCES, XS_SOURCES,
+)
+from windows_runtime import SOURCE_PACKAGES
 
 PLATFORMS = ("macos-arm64", "macos-x64", "windows-x64")
 ZIP_DATE = (1980, 1, 1, 0, 0, 0)
@@ -26,6 +30,9 @@ RECIPE_PATHS = (
     "docs/SECURITY.md", "licenses/ExifTool-Artistic.txt", "sources.json",
     "patches/ffmpeg-9.1-raw-zero-seek.patch",
     "scripts/artifacts.py", "scripts/build.sh", "scripts/inputs.py", "scripts/macos-build-tools.txt",
+    "scripts/windows-brotli-Makefile.PL", "scripts/windows-exiftool-launcher.c",
+    "scripts/windows-exiftool-launcher.manifest", "scripts/windows-exiftool-launcher.rc",
+    "scripts/windows_exiftool.py", "scripts/windows_runtime.py",
     "tests/runtime.py", "tests/test_artifacts.py", "tests/fixtures/README.md",
     "tests/fixtures/local-video.mp4", "tests/fixtures/still.avif",
     "tests/fixtures/still.heic", "tests/fixtures/tiled.heic",
@@ -36,7 +43,17 @@ BUILD_RECORDS = ("config.h", "config_components.h", "toolchain.txt")
 WINDOWS_NOTICES = (
     "COPYING.RUNTIME", "COPYING3", "COPYING.MinGW-w64-runtime.txt", "COPYING.winpthreads",
 )
-
+WINDOWS_COMPANION_SOURCES = (*dict.fromkeys(SOURCE_PACKAGES.values()), "perl-core",
+                             "strawberry-build", "perl-win32-api", *WINLIBS_BASE_SOURCES)
+EXIFTOOL_RECORDS = NOTICE_FILES | {RUNTIME_BUILD}
+EXIFTOOL_REQUIRED = {"exiftool.exe", *(f"{RUNTIME_DIR}/{name}" for name in PERL_DLLS),
+                     f"{RUNTIME_DIR}/exiftool.pl", f"{RUNTIME_DIR}/lib/Image/ExifTool.pm",
+                     f"{RUNTIME_DIR}/lib/Image/ExifTool/Geolocation.dat",
+                     f"{RUNTIME_DIR}/lib/File/RandomAccess.pm",
+                     f"{RUNTIME_DIR}/lib/{WIN32_FILE_DATA}",
+                     f"{RUNTIME_DIR}/lib/auto/Compress/Raw/Zlib/Zlib.xs.dll",
+                     f"{RUNTIME_DIR}/lib/auto/IO/Compress/Brotli/Brotli.xs.dll",
+                     f"{RUNTIME_DIR}/lib/auto/Win32/FindFile/FindFile.xs.dll"} | NOTICE_FILES
 
 
 def write_json(path, data):
@@ -57,11 +74,20 @@ def archive_zip(path, members):
 def layout(platform, revision):
     ffmpeg = f"casamemo-ffmpeg-{FFMPEG_VERSION}-{platform}-{revision}.zip"
     source = f"casamemo-sources-{platform}-{revision}.zip"
-    ffprobe = exiftool = None
+    ffprobe = None
+    exiftool_format = "zip"
     if platform.startswith("macos-"):
         ffprobe = f"casamemo-ffprobe-{FFMPEG_VERSION}-{platform}-{revision}.zip"
-        exiftool = f"casamemo-exiftool-{EXIFTOOL_VERSION}-{platform}-{revision}.tar.gz"
+        exiftool_format = "tar.gz"
+    exiftool = f"casamemo-exiftool-{EXIFTOOL_VERSION}-{platform}-{revision}.{exiftool_format}"
     return ffmpeg, ffprobe, exiftool, source
+
+
+def source_inputs(platform):
+    dependencies = (*FFMPEG_SOURCES, "exiftool")
+    if platform == "windows-x64":
+        return (*dependencies, *XS_SOURCES, *WINDOWS_COMPANION_SOURCES)
+    return dependencies
 
 
 def regular_file(root, relative):
@@ -101,10 +127,13 @@ def recipe_files():
     # Source companions can be rebuilt outside a Git checkout. In a checkout,
     # fail closed if a required input is ignored by repository or local rules.
     if (ROOT / ".git").exists():
-        result = subprocess.run(
-            ["git", "check-ignore", "--no-index", "-z", "--stdin"], cwd=ROOT,
-            input=("\0".join(RECIPE_PATHS) + "\0").encode(), stdout=subprocess.PIPE,
-        )
+        try:
+            result = subprocess.run(
+                ["git", "check-ignore", "--no-index", "-z", "--stdin"], cwd=ROOT,
+                input=("\0".join(RECIPE_PATHS) + "\0").encode(), stdout=subprocess.PIPE,
+            )
+        except FileNotFoundError as error:
+            raise ValueError("Git executable not found on PATH. The source archive inventory requires Git.") from error
         if result.returncode == 0:
             raise ValueError("An approved recipe path is ignored by Git")
         if result.returncode != 1:
@@ -122,6 +151,7 @@ def build_record_names(platform):
     names = {f"build/{name}" for name in BUILD_RECORDS}
     if platform == "windows-x64":
         names.update(f"build/windows-notices/{name}" for name in WINDOWS_NOTICES)
+        names.add("build/windows-static-linkage.txt")
     return names
 
 
@@ -163,12 +193,49 @@ def validate_config(text, components):
         raise ValueError(f"Unexpected FFmpeg protocols: {protocols}")
 
 
+def windows_exiftool_members(work):
+    record_path = regular_file(work, f"exiftool/{RUNTIME_BUILD}")
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    entries = record["members"]
+    validate_exiftool_inventory(entries)
+    members = [(RUNTIME_BUILD, record_path, 0o644)]
+    for name, checksum in entries.items():
+        path = regular_file(work, f"exiftool/{name}")
+        require_hash(path, checksum)
+        if name.endswith((".exe", ".dll")):
+            require_public_binary(path, work)
+        members.append((name, path, 0o755 if name == "exiftool.exe" else 0o644))
+    return members
+
+
+def validate_exiftool_inventory(entries):
+    if not isinstance(entries, dict) or not EXIFTOOL_REQUIRED <= entries.keys():
+        raise ValueError("Windows ExifTool runtime inventory is incomplete")
+    for name, digest in entries.items():
+        if (name not in EXIFTOOL_REQUIRED
+                and not re.fullmatch(rf"{RUNTIME_DIR}/lib/(?:[A-Za-z0-9_.+-]+/)*[A-Za-z0-9_.+-]+\.(?:pm|pl|al|ix|dll|enc)", name)):
+            raise ValueError(f"Unexpected Windows ExifTool member: {name}")
+        if any(part.endswith(".") for part in name.split("/")):
+            raise ValueError(f"Unsafe Windows ExifTool member: {name}")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError(f"Invalid Windows ExifTool member hash: {name}")
+
+
+def require_public_binary(binary, work):
+    contents = binary.read_bytes()
+    for path in (ROOT, work, Path.home()):
+        for value in {str(path), path.as_posix()}:
+            if len(value) > 3 and (value.encode("utf-8") in contents
+                                  or value.encode("utf-16le") in contents):
+                raise ValueError(f"A local build path is embedded in {binary.name}")
+
+
 def package(platform, cache, work, destination, revision):
     if destination.exists():
         raise ValueError(f"Output already exists: {destination}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     ffmpeg_name, ffprobe_name, exiftool_name, source_name = layout(platform, revision)
-    dependencies = FFMPEG_SOURCES + (("exiftool",) if exiftool_name else ())
+    windows = platform == "windows-x64"
     with tempfile.TemporaryDirectory(dir=destination.parent) as temporary:
         staging = Path(temporary) / "candidate"
         staging.mkdir()
@@ -178,19 +245,22 @@ def package(platform, cache, work, destination, revision):
         runtime = []
         for executable in binary_names(platform):
             binary = regular_file(work, f"ffmpeg/{executable}")
-            contents = binary.read_bytes()
-            for value in (str(ROOT), str(work), os.path.expanduser("~")):
-                if len(value) > 3 and value.encode() in contents:
-                    raise ValueError(f"A local build path is embedded in {binary.name}")
+            require_public_binary(binary, work)
             runtime.append((f"bin/{executable}", binary, 0o755))
         inventory = notices(work)
         archive_zip(staging / ffmpeg_name, (runtime[:1] if ffprobe_name else runtime) + inventory + evidence)
         if ffprobe_name:
             archive_zip(staging / ffprobe_name, runtime[1:] + inventory + evidence)
-        if exiftool_name:
+        if windows:
+            exif_members = windows_exiftool_members(work)
+            archive_zip(staging / exiftool_name, exif_members)
+            evidence += [member for member in exif_members
+                         if member[0] in EXIFTOOL_RECORDS - notice_names()]
+        else:
             shutil.copyfile(source_archive("exiftool", cache, download=True), staging / exiftool_name)
-        inputs = [(f"upstream/{SOURCES[name]['file']}", source_archive(name, cache), 0o644)
-                  for name in dependencies]
+        inputs = [(f"upstream/{SOURCES[name]['file']}",
+                   source_archive(name, cache, download=name in WINDOWS_COMPANION_SOURCES), 0o644)
+                  for name in source_inputs(platform)]
         archive_zip(staging / source_name, inputs + inventory + evidence + recipe_files())
         index(staging, platform, revision, state="ci-candidate")
         verify(staging)
@@ -202,8 +272,7 @@ def package_specs(platform, revision):
     roles = [(ffmpeg, "ffmpeg" if ffprobe else "ffmpeg-ffprobe", "zip")]
     if ffprobe:
         roles.append((ffprobe, "ffprobe", "zip"))
-    if exiftool:
-        roles.append((exiftool, "exiftool", "tar.gz"))
+    roles.append((exiftool, "exiftool", "zip" if platform == "windows-x64" else "tar.gz"))
     return roles + [(source, "source", "zip")]
 
 
@@ -213,16 +282,14 @@ def provisioning(platform, revision):
         "ffmpeg": {"asset": ffmpeg, "version": FFMPEG_VERSION, "checksumTarget": "archive"},
         "ffprobe": ({"asset": ffprobe, "version": FFMPEG_VERSION, "checksumTarget": "archive"}
                     if ffprobe else None),
-        "exiftool": ({"asset": exiftool, "version": EXIFTOOL_VERSION, "checksumTarget": "archive"}
-                     if exiftool else None),
+        "exiftool": {"asset": exiftool, "version": EXIFTOOL_VERSION, "checksumTarget": "archive"},
     }
 
 
 def index(directory, platform, revision, state):
     if platform == "windows-x64" and state == "owner-finalized":
         raise ValueError("Windows runtime redistribution review is still open")
-    _, _, exiftool, _ = layout(platform, revision)
-    dependencies = FFMPEG_SOURCES + (("exiftool",) if exiftool else ())
+    dependencies = source_inputs(platform)
     packages = []
     for name, role, archive_format in package_specs(platform, revision):
         path = directory / name
@@ -237,8 +304,8 @@ def index(directory, platform, revision, state):
         "artifacts": packages,
         "provisioning": provisioning(platform, revision),
     }
-    if not exiftool:
-        data["excluded"] = {"exiftool": "Windows security and source provenance gate. See docs/SECURITY.md."}
+    if platform == "windows-x64":
+        data["buildInputs"] = {"strawberry-perl": SOURCES["strawberry-perl"]}
     write_json(directory / "artifacts.json", data)
     (directory / "SHA256SUMS").write_bytes(checksum_text(packages))
 
@@ -266,6 +333,31 @@ def verify_zip(path):
             raise ValueError(f"Corrupt ZIP member: {bad}")
 
 
+def verify_windows_exiftool(path, sources):
+    verify_zip(path)
+    with zipfile.ZipFile(path) as archive:
+        record = json.loads(archive.read(RUNTIME_BUILD))
+        entries = record["members"]
+        validate_exiftool_inventory(entries)
+        require_inventory(archive, {RUNTIME_BUILD, *entries})
+        if archive.getinfo("exiftool.exe").external_attr >> 16 & 0o755 != 0o755:
+            raise ValueError("Missing executable permissions for exiftool.exe")
+        if record["perlAbi"] != "5.42.3|MSWin32-x64-multi-thread|13.2.0|xs.dll" or (
+                record["perlZlib"] != SOURCES["zlib"]["version"]):
+            raise ValueError("Unexpected Windows ExifTool runtime versions")
+        if set(record["peImports"]) != {name for name in entries if name.endswith((".exe", ".dll"))}:
+            raise ValueError("Windows ExifTool PE record does not cover its complete binary inventory")
+        objects = record["winlibsLinkedObjects"]
+        if set(objects) != {"brotli", "findfile", "launcher", "zlib"} or not all(objects.values()):
+            raise ValueError("Windows ExifTool static link record is incomplete")
+        for name, expected in entries.items():
+            if hashlib.sha256(archive.read(name)).hexdigest() != expected:
+                raise ValueError(f"Windows ExifTool member mismatch: {name}")
+        for name in sorted(EXIFTOOL_RECORDS):
+            if archive.read(name) != sources.read(name):
+                raise ValueError(f"Windows ExifTool and source records differ: {name}")
+
+
 def verify(directory):
     data = json.loads((directory / "artifacts.json").read_text(encoding="utf-8"))
     platform, revision = data["platform"], data["revision"]
@@ -280,12 +372,12 @@ def verify(directory):
     records = [(item["filename"], item["role"], item["format"]) for item in packages]
     if package_specs(platform, revision) != records:
         raise ValueError("Unexpected artifact names, roles or formats")
-    dependencies = FFMPEG_SOURCES + (("exiftool",) if exiftool else ())
+    windows = platform == "windows-x64"
+    dependencies = source_inputs(platform)
     if data["sources"] != {name: SOURCES[name] for name in dependencies}:
         raise ValueError("Artifact metadata does not match the source lock")
-    if not exiftool and ("exiftool" not in data.get("excluded", {})
-                         or data["provisioning"]["exiftool"] is not None):
-        raise ValueError("Windows ExifTool must be excluded")
+    if windows and data.get("buildInputs") != {"strawberry-perl": SOURCES["strawberry-perl"]}:
+        raise ValueError("Artifact metadata does not match the Windows build input lock")
     if data["provisioning"] != provisioning(platform, revision):
         raise ValueError("Unexpected provisioning layout")
     if (directory / "SHA256SUMS").read_bytes() != checksum_text(packages):
@@ -304,7 +396,8 @@ def verify(directory):
     upstream = {f"upstream/{SOURCES[name]['file']}" for name in dependencies}
     recipe = {f"recipe/{name}" for name in RECIPE_PATHS}
     with zipfile.ZipFile(directory / source) as source_archive_zip:
-        require_inventory(source_archive_zip, records | upstream | recipe)
+        source_records = records | EXIFTOOL_RECORDS if windows else records
+        require_inventory(source_archive_zip, source_records | upstream | recipe)
         for filename, expected in runtime:
             path = directory / filename
             verify_zip(path)
@@ -327,7 +420,9 @@ def verify(directory):
                     digest.update(chunk)
                 if digest.hexdigest() != item["sha256"]:
                     raise ValueError(f"Corresponding source mismatch: {name}")
-    if exiftool:
+        if windows:
+            verify_windows_exiftool(directory / exiftool, source_archive_zip)
+    if not windows:
         record = SOURCES["exiftool"]
         require_hash(directory / exiftool, record["sha256"])
         name = record["directory"]

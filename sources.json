@@ -46,5 +46,97 @@
     "sha256": "dcb9f6be1f6705ee826a92d1522e3fec1d0b3749cdc061b03c46873d5fe204fc",
     "directory": "Image-ExifTool-13.64",
     "notices": ["README"]
+  },
+  "strawberry-perl": {
+    "version": "5.42.3.1",
+    "file": "strawberry-perl-5.42.3.1-64bit-portable.zip",
+    "url": "https://github.com/StrawberryPerl/Perl-Dist-Strawberry/releases/download/SP_54231_64bit/strawberry-perl-5.42.3.1-64bit-portable.zip",
+    "sha256": "6a081a811781c30aca51dbc036afd93092af91e3297901f02c17043795a10690"
+  },
+  "perl-brotli": {
+    "version": "0.023",
+    "file": "IO-Compress-Brotli-0.023.tar.gz",
+    "url": "https://cpan.metacpan.org/authors/id/T/TI/TIMLEGGE/IO-Compress-Brotli-0.023.tar.gz",
+    "sha256": "fb30386115589dbdc71ff3ab0af1b67c33c202df4bbdb4e00093f1c50a2cf2f8",
+    "directory": "IO-Compress-Brotli-0.023",
+    "notices": ["README", "brotli/LICENSE"]
+  },
+  "perl-findfile": {
+    "version": "0.15",
+    "file": "Win32-FindFile-0.15.tar.gz",
+    "url": "https://cpan.metacpan.org/authors/id/G/GR/GRIAN/Win32-FindFile-0.15.tar.gz",
+    "sha256": "bfd4ef029f0a0e0d0c952d8bdc1bbfdf1ca63e4bb120752d35597e4e9a6e9578",
+    "directory": "Win32-FindFile-0.15",
+    "notices": ["README", "META.yml"]
+  },
+  "perl-core": {
+    "version": "5.42.3",
+    "file": "perl-5.42.3.tar.gz",
+    "url": "https://www.cpan.org/src/5.0/perl-5.42.3.tar.gz",
+    "sha256": "1137740985837b5cdf15f0cfab932279dcb4352f912fed6fc144e8b4f0823627",
+    "directory": "perl-5.42.3",
+    "notices": ["cpan/Compress-Raw-Bzip2/bzip2-src/LICENSE"]
+  },
+  "strawberry-build": {
+    "version": "5dcf6112bf70f5f99ff621dca7f07675928eab94",
+    "file": "strawberry-perl-build-5dcf611.tar.gz",
+    "url": "https://codeload.github.com/StrawberryPerl/Perl-Dist-Strawberry/tar.gz/5dcf6112bf70f5f99ff621dca7f07675928eab94",
+    "sha256": "71b07af79447029364e222c801f5db9e7166bad83d5a67f40c0a32b93634a49b"
+  },
+  "perl-win32-api": {
+    "version": "0.84",
+    "file": "Win32-API-0.84.tar.gz",
+    "url": "https://cpan.metacpan.org/authors/id/B/BU/BULKDD/Win32/Win32-API-0.84.tar.gz",
+    "sha256": "839b30b01b9b1bc260b5e6a0c8956d90438d8c301180069c515613d76d501f50",
+    "directory": "Win32-API-0.84",
+    "notices": ["README", "META.json"]
+  },
+  "perl-zlib": {
+    "version": "2.222",
+    "file": "Compress-Raw-Zlib-2.222.tar.gz",
+    "url": "https://cpan.metacpan.org/authors/id/P/PM/PMQS/Compress-Raw-Zlib-2.222.tar.gz",
+    "sha256": "1dfd7d511a655627c81815d30d3babc28fa5b88455ff03f8b04099dcb51286b8",
+    "directory": "Compress-Raw-Zlib-2.222",
+    "notices": ["README"]
+  },
+  "msys2-gcc": {
+    "version": "16.2.0-7",
+    "file": "mingw-w64-gcc-16.2.0-7.src.tar.zst",
+    "url": "https://mirror.msys2.org/mingw/sources/mingw-w64-gcc-16.2.0-7.src.tar.zst",
+    "sha256": "bdd1b2cd820cd67d38b42a174180bdd589b80b97af1a8b042d6c4da9176bac93"
+  },
+  "msys2-crt": {
+    "version": "14.0.0.r598.ge3d18511f-1",
+    "file": "mingw-w64-crt-14.0.0.r598.ge3d18511f-1.src.tar.zst",
+    "url": "https://mirror.msys2.org/mingw/sources/mingw-w64-crt-14.0.0.r598.ge3d18511f-1.src.tar.zst",
+    "sha256": "a6df84c851473c2b293f36a8864b52980a5d875b1c7e2fbfb01dece3f400256a"
+  },
+  "msys2-winpthreads": {
+    "version": "14.0.0.r598.ge3d18511f-1",
+    "file": "mingw-w64-winpthreads-14.0.0.r598.ge3d18511f-1.src.tar.zst",
+    "url": "https://mirror.msys2.org/mingw/sources/mingw-w64-winpthreads-14.0.0.r598.ge3d18511f-1.src.tar.zst",
+    "sha256": "1da3dad4f6916d0c23e8fe76c38ed79946fb32078f94047c0475229b8112a1db"
+  },
+  "msys2-default-manifest": {
+    "version": "20260815-1",
+    "file": "mingw-w64-windows-default-manifest-20260815-1.src.tar.zst",
+    "url": "https://mirror.msys2.org/mingw/sources/mingw-w64-windows-default-manifest-20260815-1.src.tar.zst",
+    "sha256": "bed6d206e13c6ef0149f59fb7ed0a20c8665b8f39297247aded467860830f954"
+  },
+  "winlibs-gcc-upstream": {
+    "version": "13.2.0",
+    "file": "gcc-13.2.0.tar.xz",
+    "url": "https://gcc.gnu.org/pub/gcc/releases/gcc-13.2.0/gcc-13.2.0.tar.xz",
+    "sha256": "e275e76442a6067341a27f04c5c6b83d8613144004c0413528863dc6b5c743da",
+    "directory": "gcc-13.2.0",
+    "notices": ["COPYING3", "COPYING.RUNTIME"]
+  },
+  "winlibs-mingw-upstream": {
+    "version": "11.0.1",
+    "file": "mingw-w64-v11.0.1.tar.bz2",
+    "url": "https://downloads.sourceforge.net/project/mingw-w64/mingw-w64/mingw-w64-release/mingw-w64-v11.0.1.tar.bz2",
+    "sha256": "3f66bce069ee8bed7439a1a13da7cb91a5e67ea6170f21317ac7f5794625ee10",
+    "directory": "mingw-w64-v11.0.1",
+    "notices": ["COPYING.MinGW-w64/COPYING.MinGW-w64.txt", "COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt", "mingw-w64-libraries/winpthreads/COPYING"]
   }
 }

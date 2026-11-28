@@ -15,20 +15,23 @@ The FFmpeg CLI keeps only file and pipe protocols. Its enabled demuxers exclude 
 
 ## Windows FFmpeg and FFprobe redistribution
 
-The previous native build used MSYS2 GCC 16.2.0-7 and MinGW-w64 CRT and winpthreads
-14.0.0.r598.ge3d18511f-1. The PE import tables identify Windows system DLLs and
-UCRT redirects. Static runtime code requires a separate inventory.
+The native build checks MSYS2 GCC 16.2.0-7, MinGW-w64 CRT and winpthreads
+14.0.0.r598.ge3d18511f-1, and the Windows default manifest revision 20260815-1.
+It records the selected archive members and startup objects from both GNU
+linker maps, with their MSYS2 package owners. The source companion includes
+the hash-verified MSYS2 source packages and their exact recipes and patches.
+The CRT and winpthreads source packages carry the MinGW-w64 Git source
+selected by both recipes at `e3d18511f9759d455cae20c34703eea4a0723cf3`.
+The PE import checks cover Windows and UCRT imports.
 
 The [GCC Runtime Library Exception](https://www.gnu.org/licenses/gcc-exception-3.1.html)
 applies to files that carry the exception and to eligible compilation processes.
 The [MinGW-w64 CRT package](https://packages.msys2.org/base/mingw-w64-crt) lists
 ZPL-2.1. The [winpthreads notice](https://github.com/mingw-w64/mingw-w64/blob/master/mingw-w64-libraries/winpthreads/COPYING)
-contains the required copyright and permission notices. Retain the applicable
-runtime notices and verify the exact selected objects against the matching
-MSYS2 source revisions, build recipes and patches. A compiler version and a PE
-import list alone cannot establish that static source inventory. Windows CI
-builds and tests the candidate, with binary uploads and finalization withheld
-until this review is complete.
+contains the required copyright and permission notices. The archive carries
+these notices with the GCC and MinGW-w64 texts and build metadata. The source
+pin for the default manifest retains its public-domain generator. Windows
+binary uploads and finalization remain blocked under the ExifTool gate below.
 
 ## Windows ExifTool
 
@@ -36,20 +39,38 @@ The official ExifTool 13.64 x64 ZIP is authentic by the [published hash](https:/
 
 ExifTool uses Brotli to read compressed EXIF and XMP metadata in JPEG XL. The bundled decoder predates the [fix for CVE-2020-8927](https://github.com/google/brotli/releases/tag/v1.0.9). The affected Windows distribution is excluded from release eligibility. A replacement must retain JPEG XL metadata support and pass the native validation below. The maintained [Brotli 1.2.1 release](https://github.com/google/brotli/releases/tag/v1.2.1) also fixes CVE-2026-111497.
 
-A source-verifiable replacement is available for the Brotli component. [IO::Compress::Brotli 0.023](https://metacpan.org/release/TIMLEGGE/IO-Compress-Brotli-0.023) embeds Brotli 1.2.1 and retains the two-argument decoder API ExifTool uses. The source archive matched CPAN’s SHA-256 `fb30386115589dbdc71ff3ab0af1b67c33c202df4bbdb4e00093f1c50a2cf2f8`. A candidate assembly can reuse the [maintained Strawberry Perl 5.42.3.1 x64 portable runtime](https://strawberryperl.com/), the official ExifTool source, the [CC0 launcher source](https://oliverbetz.de/pages/Artikel/Portable-Perl-Applications), and the source of any needed XS libraries, including [Win32::FindFile](https://metacpan.org/release/GRIAN/Win32-FindFile-0.15). Compile only the XS extensions and launcher against the selected portable Perl toolchain. Verify the ABI, preserve Unicode paths, keep all DLLs and notices required at runtime, identify each linked component and retain matching source and build instructions. Select the minimal runtime with an auditable inventory rather than distributing a full Perl development kit.
+The candidate builds [IO::Compress::Brotli 0.023](https://metacpan.org/release/TIMLEGGE/IO-Compress-Brotli-0.023)
+with its bundled Brotli 1.2.1 and retains the two-argument decoder API used by
+ExifTool. It builds [Win32::FindFile 0.15](https://metacpan.org/release/GRIAN/Win32-FindFile-0.15)
+with a compatibility change for the newer XS parser. It also builds
+Compress::Raw::Zlib 2.222 with zlib 1.4 because Strawberry’s corresponding
+extension uses zlib 1.3.2. The build verifies the loaded zlib version. The
+[zlib 1.4 release notes](https://github.com/madler/zlib/releases/tag/v1.4)
+document the security fixes. Strawberry supplies the core modules and Win32::API
+0.84. The source companion includes the upstream Perl source, Strawberry build
+recipe, CPAN module sources, launcher, compatibility change and notices.
 
-The published portable Strawberry Perl 5.42.3.1 x64 ZIP was checked against its
-publisher SHA-256 `6a081a811781c30aca51dbc036afd93092af91e3297901f02c17043795a10690`.
-It uses the threaded x64 Perl 5.42 ABI and a GCC 13.2.0 UCRT toolchain. Its core
-imports the bundled libgcc, libstdc++ and libwinpthread DLLs. The portable ZIP
-contains neither the Brotli nor Win32::FindFile XS extension. The Win32::FindFile
-0.15 source matched its CPAN SHA-256
-`bfd4ef029f0a0e0d0c952d8bdc1bbfdf1ca63e4bb120752d35597e4e9a6e9578`.
-The launcher author's sample source download had SHA-256
-`72a112caac70de4cab56971d0bf1ea8050f8228ed036ec88e7657d40cc08ce0e`.
-A native assembly
-must build these extensions against this Perl ABI, build and verify the launcher
-and its sibling runtime discovery, and identify the complete DLL and notice
-closure. Match the bundled compiler runtime DLLs to their corresponding source
-and patches before redistribution. Native Windows 10 validation is pending.
-No candidate with this closure has been assembled or approved for release. Keep the official 13.64 Windows ZIP and unverified substitutes out of CI distribution and public releases. Native acceptance must include JPEG XL Brotli EXIF and XMP extraction, ordinary metadata, Unicode paths, original integrity, full PE dependency closure and the existing sibling `exiftool_files` layout on the Windows baseline. Upstream labels the pinned macOS source version 13.64 a development release. Retain its stock macOS functionality via the upstream Perl archive and OS Perl. Windows bundled Brotli functionality must be preserved in the future candidate.
+The build checks Strawberry Perl 5.42.3.1 against the [publisher SHA-256](https://strawberryperl.com/releases.json)
+in the source lock and verifies the threaded x64 Perl 5.42 ABI. The launcher
+uses the sibling `exiftool_files` layout documented by
+[Oliver Betz](https://oliverbetz.de/pages/Artikel/Portable-Perl-Applications).
+It uses wide Windows arguments, UTF-8 filename handling and a restricted DLL
+search rooted at the sibling runtime and Windows system directories. The
+runtime excludes the development toolchain and records every packaged DLL
+and its PE imports. The build records the toolchain objects linked into the
+launcher and newly built extensions. The Windows runtime test uses both Brotli
+metadata boxes from ExifTool’s JXL2 fixture, a Unicode install directory and
+Unicode input paths. Windows added the launcher’s UTF-8 process manifest
+setting in Windows 10 version 1903. [Microsoft application manifest documentation](https://learn.microsoft.com/en-us/windows/win32/sbscs/application-manifests#activecodepage)
+
+Strawberry’s upstream recipe identifies [WinLibs GCC 13.2.0, MinGW-w64 11.0.1 UCRT POSIX r8](https://github.com/StrawberryPerl/build-extlibs/releases/tag/gcc13.2_ucrt_posix).
+The candidate carries the upstream GCC and MinGW-w64 source and notices. The
+[WinLibs r8 source reference](https://sourceforge.net/projects/winlibs-mingw/files/13.2.0posix-18.1.5-11.0.1-ucrt-r8/)
+archive with SHA-256 `de5d70be55a69b0009e6d6a32fde22f7270468ffd4a205f18a19c4a3c1dc4fd1`
+contains only its README. The exact downstream patches and build scripts for
+the shipped libgcc, libstdc++ and libwinpthread DLLs and the WinLibs runtime
+objects linked into the new extensions and launcher remain unverified.
+Complete that source evidence before redistribution. Native Windows 10 x64
+acceptance and independent review are also pending. The official 13.64 Windows
+ZIP remains excluded. Upstream labels the unchanged macOS source version 13.64
+a development release.
