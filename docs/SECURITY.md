@@ -63,14 +63,81 @@ metadata boxes from ExifTool’s JXL2 fixture, a Unicode install directory and
 Unicode input paths. Windows added the launcher’s UTF-8 process manifest
 setting in Windows 10 version 1903. [Microsoft application manifest documentation](https://learn.microsoft.com/en-us/windows/win32/sbscs/application-manifests#activecodepage)
 
-Strawberry’s upstream recipe identifies [WinLibs GCC 13.2.0, MinGW-w64 11.0.1 UCRT POSIX r8](https://github.com/StrawberryPerl/build-extlibs/releases/tag/gcc13.2_ucrt_posix).
-The candidate carries the upstream GCC and MinGW-w64 source and notices. The
-[WinLibs r8 source reference](https://sourceforge.net/projects/winlibs-mingw/files/13.2.0posix-18.1.5-11.0.1-ucrt-r8/)
-archive with SHA-256 `de5d70be55a69b0009e6d6a32fde22f7270468ffd4a205f18a19c4a3c1dc4fd1`
-contains only its README. The exact downstream patches and build scripts for
-the shipped libgcc, libstdc++ and libwinpthread DLLs and the WinLibs runtime
-objects linked into the new extensions and launcher remain unverified.
-Complete that source evidence before redistribution. Native Windows 10 x64
-acceptance and independent review are also pending. The official 13.64 Windows
-ZIP remains excluded. Upstream labels the unchanged macOS source version 13.64
-a development release.
+### WinLibs binary provenance
+
+The original WinLibs r8 x64 POSIX SEH UCRT ZIP without LLVM matched the
+publisher’s SHA-256 and SHA-512 sidecars. The Strawberry recipe names
+`winlibs.zip`, which Strawberry describes as the original WinLibs layout
+flattened by one directory. The same three DLLs match byte for byte across
+WinLibs `mingw64/bin/`, Strawberry’s compiler `bin/`, the pinned portable
+Perl `c/bin/` and `perl/bin/`, and the ExifTool candidate `exiftool_files/`.
+The Windows source companion preserves their SHA-256 values, compiler archive
+digests and the linked input file digests. The two compiler ZIPs are external
+verification inputs. [WinLibs r8 release and checksums](https://github.com/brechtsanders/winlibs_mingw/releases/tag/13.2.0posix-18.1.5-11.0.1-ucrt-r8),
+[Strawberry build recipe](https://github.com/StrawberryPerl/Perl-Dist-Strawberry/blob/5dcf6112bf70f5f99ff621dca7f07675928eab94/share/64bit-5.42.3.1.pp#L24),
+[Strawberry compiler release](https://github.com/StrawberryPerl/build-extlibs/releases/tag/gcc13.2_ucrt_posix),
+[binary evidence](windows-winlibs-evidence.json).
+
+The launcher and the Brotli, FindFile and Zlib extensions incorporate GCC
+`crtbegin.o`, `crtend.o` and `libgcc.a` members, plus MinGW-w64 startup objects
+(`crt2u.o` or `dllcrt2.o`) and members of `libmingw32.a`, `libmingwex.a` and
+`libmsvcrt.a`. The maps also identify MinGW-w64 import stubs for Windows
+system DLLs via `libkernel32.a` and `libmsvcrt.a`, and for Perl via Strawberry’s
+`libperl542.a`. The WinLibs startup objects and archives selected by those maps,
+and the GCC drivers, front ends and linker checked for this review, match the
+three upstream distributions. The Perl import archive is from the pinned
+portable build. The maps cover the four CasaMemo-built binaries. The existing
+binary-to-archive check also matched the 30 prebuilt PE files to the pinned
+portable distribution.
+
+### Source and notices
+
+The Windows source companion includes GCC 13.2.0, MinGW-w64 11.0.1 and the
+MIT-licensed WinLibs recipe snapshot at `b209c11b4b4bed71816d52d5cc4682bfcd05b41f`.
+The inline patches and build commands are in `recipes/gcc.winlib` and
+`recipes/mingw-w64.winlib`. The snapshot’s recipe blobs match commits
+`7f50c9404769040c54f417efa15ce77998c0422d` (GCC) and
+`04c9221bdbe989081ee2d7ee233b08db5f70679c` (MinGW-w64). The GCC compiler
+reports the r8 package identity, x86-64 with POSIX threads and SEH, and
+configuration options that include
+`--disable-libstdcxx-backtrace` and x86-64 `-march=nocona -msahf` tuning as
+shown in the historical recipe. The MinGW-w64 recipe includes CRT changes to
+`crtexe.c` and `pseudo-reloc.c`, and winpthreads changes to `thread.c`,
+`configure` and `m4/libtool.m4`. Some of the C changes guard ARM-specific
+paths and cannot be distinguished in the x64 binary. The published r8 source
+reference, SHA-256
+`de5d70be55a69b0009e6d6a32fde22f7270468ffd4a205f18a19c4a3c1dc4fd1`,
+contains a README. We still need an r8-specific record of the effective
+patches, scripts, build variables, generated configuration and any associated
+runtime build inputs. [Historical WinLibs recipes](https://github.com/brechtsanders/winlibs_recipes/tree/b209c11b4b4bed71816d52d5cc4682bfcd05b41f),
+[r8 source reference](https://sourceforge.net/projects/winlibs-mingw/files/13.2.0posix-18.1.5-11.0.1-ucrt-r8/).
+
+The separately shipped `libgcc_s_seh-1.dll` and `libstdc++-6.dll` require
+the GCC licence and exception notices and GPLv3 section 6 corresponding
+source. For a public download, offer equivalent access to the matching source
+for those DLLs. The GCC Runtime Library Exception permits eligible
+combinations of GCC runtime code and independent modules under the modules’
+own terms and applies to qualifying static or dynamic use. The candidate keeps
+the MinGW-w64 CRT and winpthreads notices, including the binary redistribution
+notice for `libwinpthread-1.dll`. [GCC Runtime Library Exception](https://www.gnu.org/licenses/gcc-exception-3.1.html),
+[FSF exception guidance](https://www.gnu.org/licenses/gcc-exception-3.1-faq.html),
+[GPLv3 section 6](https://www.gnu.org/licenses/gpl-3.0.html#section6).
+
+The candidate’s other native ExifTool binaries comprise Perl and its core XS
+modules, including the bundled bzip2, the vendor Win32::API XS modules, and
+the CasaMemo launcher and three rebuilt extensions. The PE closure includes
+those components and Windows-provided system libraries. Vendor Perl and
+module link maps were unavailable for checking their static inputs. The
+source companion retains their pinned sources and build recipe. The package
+also carries the Perl Core and XS notices for the Unicode data and mapping
+tables, UTF-8 decoder, time64, Time::Piece and MIME::Base64. ExifTool’s
+bundled geolocation database is derived from GeoNames, credited in the
+packaged third-party notices. [Supplemental Perl notices](../licenses/Perl-Third-Party.txt),
+[ExifTool geolocation database](https://exiftool.org/geolocation.html),
+[GeoNames terms](https://www.geonames.org/export/).
+
+Windows public uploads and owner finalization stay blocked pending exact
+downstream source correspondence, independent review and supported native
+Windows 10 x64 acceptance, including CasaMemo provisioning. The official
+13.64 Windows ZIP remains excluded. Upstream labels the macOS source
+version 13.64 a development release.

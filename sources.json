@@ -138,5 +138,11 @@
     "sha256": "3f66bce069ee8bed7439a1a13da7cb91a5e67ea6170f21317ac7f5794625ee10",
     "directory": "mingw-w64-v11.0.1",
     "notices": ["COPYING.MinGW-w64/COPYING.MinGW-w64.txt", "COPYING.MinGW-w64-runtime/COPYING.MinGW-w64-runtime.txt", "mingw-w64-libraries/winpthreads/COPYING"]
+  },
+  "winlibs-recipes": {
+    "version": "b209c11b4b4bed71816d52d5cc4682bfcd05b41f",
+    "file": "winlibs-recipes-b209c11b4b4bed71816d52d5cc4682bfcd05b41f.tar.gz",
+    "url": "https://codeload.github.com/brechtsanders/winlibs_recipes/tar.gz/b209c11b4b4bed71816d52d5cc4682bfcd05b41f",
+    "sha256": "b14c37c6556ccffc5a6374f4b4004a8d1908ac9f1bdbd4795b4f4dcc1c781a9a"
   }
 }

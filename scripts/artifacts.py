@@ -24,10 +24,17 @@ ZIP_DATE = (1980, 1, 1, 0, 0, 0)
 FFMPEG_VERSION = SOURCES["ffmpeg"]["version"]
 EXIFTOOL_VERSION = SOURCES["exiftool"]["version"]
 SCHEMA_VERSION = 1
+THIRD_PARTY_NOTICE = "licenses/THIRD_PARTY_NOTICES.md"
+WINLIBS_EVIDENCE_PATH = "docs/windows-winlibs-evidence.json"
+EXIFTOOL_PACKAGE_NOTICES = {
+    THIRD_PARTY_NOTICE: "THIRD_PARTY_NOTICES.md",
+    "licenses/perl/Third-Party.txt": "licenses/Perl-Third-Party.txt",
+}
 RECIPE_PATHS = (
     ".gitattributes", ".github/workflows/build.yml", ".gitignore", "AGENTS.md",
     "LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", "docs/RELEASING.md",
-    "docs/SECURITY.md", "licenses/ExifTool-Artistic.txt", "sources.json",
+    "docs/SECURITY.md", WINLIBS_EVIDENCE_PATH, "licenses/ExifTool-Artistic.txt",
+    "licenses/Perl-Third-Party.txt", "sources.json",
     "patches/ffmpeg-9.1-raw-zero-seek.patch",
     "scripts/artifacts.py", "scripts/build.sh", "scripts/inputs.py", "scripts/macos-build-tools.txt",
     "scripts/windows-brotli-Makefile.PL", "scripts/windows-exiftool-launcher.c",
@@ -44,8 +51,9 @@ WINDOWS_NOTICES = (
     "COPYING.RUNTIME", "COPYING3", "COPYING.MinGW-w64-runtime.txt", "COPYING.winpthreads",
 )
 WINDOWS_COMPANION_SOURCES = (*dict.fromkeys(SOURCE_PACKAGES.values()), "perl-core",
-                             "strawberry-build", "perl-win32-api", *WINLIBS_BASE_SOURCES)
-EXIFTOOL_RECORDS = NOTICE_FILES | {RUNTIME_BUILD}
+                             "strawberry-build", "perl-win32-api", *WINLIBS_BASE_SOURCES,
+                             "winlibs-recipes")
+EXIFTOOL_RECORDS = NOTICE_FILES | {RUNTIME_BUILD} | EXIFTOOL_PACKAGE_NOTICES.keys()
 EXIFTOOL_REQUIRED = {"exiftool.exe", *(f"{RUNTIME_DIR}/{name}" for name in PERL_DLLS),
                      f"{RUNTIME_DIR}/exiftool.pl", f"{RUNTIME_DIR}/lib/Image/ExifTool.pm",
                      f"{RUNTIME_DIR}/lib/Image/ExifTool/Geolocation.dat",
@@ -105,7 +113,7 @@ def regular_file(root, relative):
 
 
 def notice_names():
-    return {"licenses/THIRD_PARTY_NOTICES.md"} | {
+    return {THIRD_PARTY_NOTICE} | {
         f"licenses/{name}/{filename}"
         for name in FFMPEG_SOURCES for filename in SOURCES[name]["notices"]
     }
@@ -118,8 +126,7 @@ def notices(work):
         for filename in record["notices"]:
             path = regular_file(work, f"source/{record['directory']}/{filename}")
             result.append((f"licenses/{name}/{filename}", path, 0o644))
-    result.append(("licenses/THIRD_PARTY_NOTICES.md",
-                   regular_file(ROOT, "THIRD_PARTY_NOTICES.md"), 0o644))
+    result.append((THIRD_PARTY_NOTICE, regular_file(ROOT, EXIFTOOL_PACKAGE_NOTICES[THIRD_PARTY_NOTICE]), 0o644))
     return result
 
 
@@ -198,7 +205,10 @@ def windows_exiftool_members(work):
     record = json.loads(record_path.read_text(encoding="utf-8"))
     entries = record["members"]
     validate_exiftool_inventory(entries)
+    validate_winlibs_provenance(record, winlibs_evidence())
     members = [(RUNTIME_BUILD, record_path, 0o644)]
+    members.extend((name, regular_file(ROOT, path), 0o644)
+                   for name, path in EXIFTOOL_PACKAGE_NOTICES.items())
     for name, checksum in entries.items():
         path = regular_file(work, f"exiftool/{name}")
         require_hash(path, checksum)
@@ -219,6 +229,26 @@ def validate_exiftool_inventory(entries):
             raise ValueError(f"Unsafe Windows ExifTool member: {name}")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError(f"Invalid Windows ExifTool member hash: {name}")
+
+
+def winlibs_evidence():
+    return json.loads(regular_file(ROOT, WINLIBS_EVIDENCE_PATH).read_text(encoding="utf-8"))
+
+
+def validate_winlibs_provenance(record, evidence):
+    for dll, expected in evidence["runtimeDllSha256"].items():
+        if record["members"].get(f"{RUNTIME_DIR}/{dll}") != expected:
+            raise ValueError(f"Windows ExifTool WinLibs r8 DLL mismatch: {dll}")
+    objects = record["winlibsLinkedObjects"]
+    if (not isinstance(objects, dict) or set(objects) != {"brotli", "findfile", "launcher", "zlib"}
+            or any(not isinstance(items, list) or not items for items in objects.values())):
+        raise ValueError("Windows ExifTool static link record is incomplete")
+    if any(not isinstance(item, str) for items in objects.values() for item in items):
+        raise ValueError("Invalid Windows ExifTool link input")
+    expected_files = {Path(name).name for name in evidence["linkInputSha256"]}
+    actual_files = {item.split("(", 1)[0] for entries in objects.values() for item in entries}
+    if actual_files != expected_files:
+        raise ValueError("Windows ExifTool link inputs differ from the reviewed provenance inventory")
 
 
 def require_public_binary(binary, work):
@@ -339,7 +369,7 @@ def verify_windows_exiftool(path, sources):
         record = json.loads(archive.read(RUNTIME_BUILD))
         entries = record["members"]
         validate_exiftool_inventory(entries)
-        require_inventory(archive, {RUNTIME_BUILD, *entries})
+        require_inventory(archive, {RUNTIME_BUILD, *EXIFTOOL_PACKAGE_NOTICES, *entries})
         if archive.getinfo("exiftool.exe").external_attr >> 16 & 0o755 != 0o755:
             raise ValueError("Missing executable permissions for exiftool.exe")
         if record["perlAbi"] != "5.42.3|MSWin32-x64-multi-thread|13.2.0|xs.dll" or (
@@ -347,15 +377,19 @@ def verify_windows_exiftool(path, sources):
             raise ValueError("Unexpected Windows ExifTool runtime versions")
         if set(record["peImports"]) != {name for name in entries if name.endswith((".exe", ".dll"))}:
             raise ValueError("Windows ExifTool PE record does not cover its complete binary inventory")
-        objects = record["winlibsLinkedObjects"]
-        if set(objects) != {"brotli", "findfile", "launcher", "zlib"} or not all(objects.values()):
-            raise ValueError("Windows ExifTool static link record is incomplete")
+        evidence = winlibs_evidence()
+        if json.loads(sources.read(f"recipe/{WINLIBS_EVIDENCE_PATH}")) != evidence:
+            raise ValueError("Windows source companion WinLibs evidence differs from the reviewed inventory")
+        validate_winlibs_provenance(record, evidence)
         for name, expected in entries.items():
             if hashlib.sha256(archive.read(name)).hexdigest() != expected:
                 raise ValueError(f"Windows ExifTool member mismatch: {name}")
         for name in sorted(EXIFTOOL_RECORDS):
             if archive.read(name) != sources.read(name):
                 raise ValueError(f"Windows ExifTool and source records differ: {name}")
+        for name, path in EXIFTOOL_PACKAGE_NOTICES.items():
+            if archive.read(name) != sources.read(f"recipe/{path}"):
+                raise ValueError(f"Windows ExifTool notice differs from the packaged recipe: {name}")
 
 
 def verify(directory):
