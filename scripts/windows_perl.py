@@ -18,15 +18,30 @@ PERL_RUNTIME_PACKAGES = ("msys2-libgcc", "msys2-libstdc++", "msys2-libwinpthread
 PERL_BUILD_INPUTS = ("msys2-native-make", *PERL_RUNTIME_PACKAGES)
 
 
+def msys_tool(name):
+    # Use the active shell's cygpath to locate MSYS2. Native CreateProcess
+    # can find System32's Bash before executables on PATH.
+    cygpath = shutil.which("cygpath.exe")
+    if cygpath:
+        bin_dir = Path(cygpath).resolve().parent
+        if (bin_dir.name.lower() == "bin" and bin_dir.parent.name.lower() == "usr"
+                and (bin_dir / "msys-2.0.dll").is_file() and (bin_dir / "pacman.exe").is_file()):
+            executable = (bin_dir / name).resolve()
+            if executable.parent == bin_dir and executable.is_file():
+                return executable
+    raise ValueError(f"Could not resolve MSYS2 /usr/bin/{name} from cygpath.exe on PATH. "
+                     "Run the Windows build from the intended MSYS2 UCRT64 shell.")
+
+
 def ucrt_prefix():
-    prefix = subprocess.check_output(["cygpath", "-m", "/ucrt64"], text=True).strip()
     if os.environ.get("MSYSTEM") != "UCRT64":
         raise ValueError("The Windows Perl build requires the native MSYS2 UCRT64 shell")
+    prefix = subprocess.check_output([msys_tool("cygpath.exe"), "-m", "/ucrt64"], text=True).strip()
     return Path(prefix).resolve()
 
 
-def msys_path(path):
-    return subprocess.check_output(["cygpath", "-u", str(path)], text=True).strip()
+def msys_path(path, cygpath):
+    return subprocess.check_output([cygpath, "-u", str(path)], text=True).strip()
 
 
 def stage_recipe(key, cache, work, filename):
@@ -64,8 +79,10 @@ def stage_perl(cache, work):
 
 
 def compile_perl(recipe, native_tools, patches, jobs):
+    bash = msys_tool("bash.exe")
+    cygpath = msys_tool("cygpath.exe")
     arguments = [ROOT / "scripts/build-windows-perl.sh", recipe, *patches, native_tools]
-    subprocess.run(["bash", *map(msys_path, arguments), str(jobs)], check=True)
+    subprocess.run([bash, *(msys_path(path, cygpath) for path in arguments), str(jobs)], check=True)
     return recipe / "build-UCRT64"
 
 

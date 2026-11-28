@@ -1,10 +1,11 @@
 from pathlib import Path
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 from zipfile import ZipFile, ZipInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -12,6 +13,52 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import artifacts
 from artifacts import archive_zip, provisioning, verify_zip
 from inputs import require_hash, sha256
+import windows_perl
+
+
+class MsysToolsTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.msys = self.root / "MSYS2 tools" / "usr/bin"
+        self.msys.mkdir(parents=True)
+        for name in ("cygpath.exe", "bash.exe", "msys-2.0.dll", "pacman.exe"):
+            (self.msys / name).touch(mode=0o755)
+
+    def test_perl_launch_uses_msys2_bash_and_converts_all_paths(self):
+        system = self.root / "System32"
+        system.mkdir()
+        (system / "bash.exe").touch(mode=0o755)
+        recipe, patches, tools = self.root / "recipe", [self.root / "fix.patch"], self.root / "tools"
+        arguments = [windows_perl.ROOT / "scripts/build-windows-perl.sh", recipe, *patches, tools]
+        converted = ["/build/build-windows-perl.sh", "/build/recipe", "/build/fix.patch", "/build/tools"]
+        with patch.dict(os.environ, PATH=os.pathsep.join(map(str, (system, self.msys))), MSYSTEM="UCRT64"):
+            with patch.object(windows_perl.subprocess, "check_output",
+                              side_effect=[path + "\n" for path in converted]) as convert:
+                with patch.object(windows_perl.subprocess, "run") as run:
+                    self.assertEqual(windows_perl.compile_perl(recipe, tools, patches, 4), recipe / "build-UCRT64")
+        self.assertEqual(convert.call_args_list, [
+            call([self.msys / "cygpath.exe", "-u", str(path)], text=True) for path in arguments
+        ])
+        run.assert_called_once_with([self.msys / "bash.exe", *converted, "4"], check=True)
+
+    def test_missing_msys2_bash_fails_before_launch_even_with_a_path_fallback(self):
+        (self.msys / "bash.exe").unlink()
+        other = self.root / "other"
+        other.mkdir()
+        (other / "bash.exe").touch(mode=0o755)
+        with patch.dict(os.environ, PATH=os.pathsep.join(map(str, (other, self.msys)))):
+            with patch.object(windows_perl.subprocess, "run") as run:
+                with self.assertRaisesRegex(ValueError, r"Could not resolve MSYS2 /usr/bin/bash\.exe.*UCRT64"):
+                    windows_perl.compile_perl(self.root, self.root, (), 4)
+        run.assert_not_called()
+
+    def test_non_msys2_cygpath_is_rejected(self):
+        (self.msys / "pacman.exe").unlink()
+        with patch.dict(os.environ, PATH=str(self.msys)):
+            with self.assertRaisesRegex(ValueError, r"Could not resolve MSYS2 /usr/bin/bash\.exe"):
+                windows_perl.msys_tool("bash.exe")
 
 
 class ArchiveTests(unittest.TestCase):

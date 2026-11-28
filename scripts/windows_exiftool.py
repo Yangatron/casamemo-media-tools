@@ -13,7 +13,7 @@ import tarfile
 from inputs import ROOT, SOURCES, path_spellings, sha256, source_tree
 from windows_perl import (
     PERL_ABI, PERL_DLL, PERL_IDENTITY, PERL_PATCHES, PERL_RUNTIME_PACKAGES,
-    compile_perl, msys_path, stage_perl, stage_recipe, stage_runtime_dlls, ucrt_prefix,
+    compile_perl, msys_path, msys_tool, stage_perl, stage_recipe, stage_runtime_dlls, ucrt_prefix,
 )
 from windows_runtime import SOURCE_PACKAGES, check_packages, linked_objects
 
@@ -264,8 +264,9 @@ def build_runtime(cache, work, build_dir, recipe, native_tools, perl_tree, jobs)
     ]
     api_recipe = stage_recipe("msys2-perl-win32-api", cache, build_dir, "Win32-API-0.84.tar.gz")
     win32_api = api_recipe / "Win32-API-0.84"
-    command(["patch", "--batch", "--forward", "--fuzz=0", "-p1", "-i",
-             msys_path(api_recipe / "0001-clang-as-defines.patch")], win32_api, os.environ)
+    command([msys_tool("patch.exe"), "--batch", "--forward", "--fuzz=0", "-p1", "-i",
+             msys_path(api_recipe / "0001-clang-as-defines.patch", msys_tool("cygpath.exe"))],
+            win32_api, os.environ)
     prefix = ucrt_prefix()
     tools = prefix / "bin"
     perl_lib = perl_tree / "lib"
