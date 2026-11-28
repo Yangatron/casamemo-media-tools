@@ -1,0 +1,15 @@
+--- a/fftools/ffmpeg_demux.c
++++ b/fftools/ffmpeg_demux.c
+@@ -2536,6 +2536,12 @@
+         } else
+             av_log(d, AV_LOG_WARNING, "Cannot use -sseof, file duration not known\n");
+     }
++
++    /* An explicit zero offset starts at the current probe buffer for these
++     * elementary streams. An unsupported seek can discard that buffer. */
++    if (start_time == 0 && !o->seek_timestamp &&
++        (!strcmp(ic->iformat->name, "h264") || !strcmp(ic->iformat->name, "hevc")))
++        start_time = AV_NOPTS_VALUE;
+     timestamp = (start_time == AV_NOPTS_VALUE) ? 0 : start_time;
+     /* add the stream start time */
+     if (!o->seek_timestamp && ic->start_time != AV_NOPTS_VALUE)

@@ -1,0 +1,90 @@
+name: Media Tools candidates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-15
+          - platform: macos-x64
+            runner: macos-15-intel
+          - platform: windows-x64
+            runner: windows-2025
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Windows build tools
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2.32.0
+        with:
+          msystem: UCRT64
+          release: false
+          update: true
+          install: >-
+            make
+            patch
+            curl
+            diffutils
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-git
+            mingw-w64-ucrt-x86_64-meson
+            mingw-w64-ucrt-x86_64-nasm
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-python
+
+      - name: Build and verify on macOS
+        if: runner.os == 'macOS'
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          PKG_CONFIG: pkgconf
+        shell: bash
+        run: |
+          expected=arm64
+          if [[ "$PLATFORM" == macos-x64 ]]; then expected=x86_64; fi
+          test "$(uname -m)" = "$expected"
+          python3 -m venv "$RUNNER_TEMP/media-tools"
+          source "$RUNNER_TEMP/media-tools/bin/activate"
+          python3 -m pip --disable-pip-version-check install --only-binary=:all: --require-hashes -r scripts/macos-build-tools.txt
+          python3 -m unittest discover -s tests
+          bash scripts/build.sh "$PLATFORM"
+          python3 tests/runtime.py "dist/$PLATFORM"
+
+      - name: Build and verify on Windows
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        env:
+          PYTHON: python
+        run: |
+          set -euo pipefail
+          test "$MSYSTEM" = UCRT64
+          test "$(uname -m)" = x86_64
+          git --version
+          python -m unittest discover -s tests
+          bash scripts/build.sh windows-x64
+          python tests/runtime.py dist/windows-x64
+
+      - name: Upload validated macOS candidate
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: media-tools-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/${{ matrix.platform }}/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
