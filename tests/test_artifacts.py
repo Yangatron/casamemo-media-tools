@@ -105,6 +105,13 @@ class ArchiveTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Git executable not found on PATH"):
                     artifacts.recipe_files()
 
+    def test_public_input_rejects_an_escaped_local_windows_path(self):
+        sample = self.work / "disclosure.json"
+        private_path = self.work.as_posix().replace("/", "\\\\").upper()
+        sample.write_text(private_path, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "local build path"):
+            artifacts.require_public_binary(sample, self.work)
+
     def test_recipe_rejects_symlinked_file_or_directory(self):
         outside = self.work / "outside"
         outside.mkdir()
@@ -140,8 +147,12 @@ class ArchiveTests(unittest.TestCase):
             ("build/toolchain.txt", True, True),
             ("build/windows-notices/COPYING.winpthreads", True, True),
             ("recipe/scripts/build.sh", True, False),
-            (f"recipe/{artifacts.WINLIBS_EVIDENCE_PATH}", True, False),
-            (f"upstream/{artifacts.SOURCES['winlibs-recipes']['file']}", True, False),
+            ("recipe/scripts/build-windows-perl.sh", True, False),
+            (f"upstream/{artifacts.SOURCES['msys2-perl']['file']}", True, False),
+            (f"upstream/{artifacts.SOURCES['msys2-perl-win32-api']['file']}", True, False),
+            (f"upstream/{artifacts.SOURCES['msys2-mingw-recipes-license']['file']}", True, False),
+            (f"upstream/{artifacts.SOURCES['perl-regex-fix']['file']}", True, False),
+            ("licenses/perl/Third-Party.txt", True, False),
             (min(upstream), True, False),
             ("licenses/libwebp/PATENTS", False, True),
         )
@@ -162,29 +173,72 @@ class ArchiveTests(unittest.TestCase):
 
     def test_windows_exiftool_inventory_rejects_extra_files_and_traversal(self):
         required = dict.fromkeys(artifacts.EXIFTOOL_REQUIRED, "0" * 64)
-        xs = "exiftool_files/lib/auto/Compress/Raw/Bzip2/Bzip2.xs.dll"
-        artifacts.validate_exiftool_inventory({**required, xs: "0" * 64})
+        artifacts.validate_exiftool_inventory(required)
         for name in ("exiftool_files/perl.exe", "exiftool_files/lib/../private.pm"):
             with self.subTest(name=name), self.assertRaisesRegex(ValueError, "Windows ExifTool member"):
                 artifacts.validate_exiftool_inventory({**required, name: "0" * 64})
+        with self.assertRaisesRegex(ValueError, "Unexpected Windows ExifTool native binary inventory"):
+            artifacts.validate_exiftool_inventory(
+                {**required, "exiftool_files/lib/auto/Unknown/Unknown.dll": "0" * 64})
 
-    def test_windows_winlibs_provenance_rejects_changed_dll_or_link_input(self):
-        evidence = artifacts.winlibs_evidence()
-        members = {f"exiftool_files/{name}": digest
-                   for name, digest in evidence["runtimeDllSha256"].items()}
-        files = [Path(name).name for name in evidence["linkInputSha256"]]
-        objects = {name: files.copy() for name in ("brotli", "findfile", "launcher", "zlib")}
-        record = {"members": members, "winlibsLinkedObjects": objects}
-        artifacts.validate_winlibs_provenance(record, evidence)
-        with self.assertRaisesRegex(ValueError, "WinLibs r8 DLL mismatch: libstdc"):
-            artifacts.validate_winlibs_provenance(
-                {**record, "members": {**members, "exiftool_files/libstdc++-6.dll": "0" * 64}},
-                evidence)
-        objects["launcher"].append("libunreviewed.a(runtime.o)")
-        with self.assertRaisesRegex(ValueError, "link inputs differ"):
-            artifacts.validate_winlibs_provenance(record, evidence)
+    def test_verify_rejects_modified_perl_source_after_reindexing(self):
+        sample = self.work / "member"
+        sample.write_bytes(b"substitute source bytes")
+        platform, revision = "windows-x64", "r1"
+        runtime, _, exiftool, sources = artifacts.layout(platform, revision)
+        records = artifacts.notice_names() | artifacts.build_record_names(platform)
+        bins = {f"bin/{name}" for name in artifacts.binary_names(platform)}
+        dependencies = artifacts.source_inputs(platform)
+        locked = {**artifacts.SOURCES, **{
+            name: {**artifacts.SOURCES[name], "sha256": sha256(sample)}
+            for name in dependencies if name != "msys2-perl"
+        }}
+        upstream = {f"upstream/{locked[name]['file']}" for name in dependencies}
+        recipe = {f"recipe/{name}" for name in artifacts.RECIPE_PATHS}
+        source_members = records | artifacts.EXIFTOOL_RECORDS | upstream | recipe
+        archive_zip(self.work / sources, [(name, sample, 0o644) for name in source_members])
+        archive_zip(self.work / runtime, [(name, sample, 0o755) for name in records | bins])
+        archive_zip(self.work / exiftool, [("placeholder", sample, 0o644)])
+        with patch.object(artifacts, "SOURCES", locked), patch.object(artifacts, "validate_config"):
+            artifacts.index(self.work, platform, revision, "ci-candidate")
+            with self.assertRaisesRegex(ValueError, "Corresponding source mismatch: msys2-perl"):
+                artifacts.verify(self.work)
 
-    def test_windows_exiftool_requires_shared_notice_and_matching_source_evidence(self):
+    def test_windows_build_record_rejects_bad_runtime_and_link_provenance(self):
+        dlls = {
+            name: {"package": package, "sha256": artifacts.SOURCES[package]["memberSha256"],
+                   "recipeSha256": artifacts.SOURCES[package]["recipeSha256"]}
+            for name, package in artifacts.RUNTIME_DLL_OWNERS.items()
+        }
+        members = {f"exiftool_files/{name}": data["sha256"] for name, data in dlls.items()}
+        imports = {name: ["kernel32.dll"] for name in artifacts.NATIVE_FILES}
+        inputs = {"ucrt64/lib/libgcc.a": {"owner": "gcc", "sha256": "0" * 64},
+                  "ucrt64/lib/crt2.o": {"owner": "crt", "sha256": "0" * 64}}
+        local = {name: {"owner": spec[0], "sha256": "0" * 64}
+                 for name, spec in artifacts.LOCAL_LINK_ARCHIVES.items()}
+        record = {
+            "perlAbi": artifacts.PERL_ABI, "perlIdentity": artifacts.PERL_IDENTITY,
+            "securityPatches": [artifacts.SOURCES[name]["sha256"] for name in artifacts.PERL_PATCHES],
+            "compiledRegex": dict.fromkeys(("regexec.c", "regexp.h", "regexec.o"), "0" * 64),
+            "perlCompiler": ["cc=gcc", "ld=g++", "ccflags=flags", "optimize=-Os", "ldflags=-s"],
+            "nativeVersions": {"brotli": artifacts.BROTLI_VERSION, "zlib": artifacts.SOURCES["zlib"]["version"]},
+            "members": members, "peImports": imports, "runtimeDlls": dlls, "linkInputs": inputs | local,
+            "linkage": {name: {item: ["test.o"] for item in inputs.keys() | artifacts.required_local_archives(name)}
+                        for name in artifacts.NATIVE_FILES - members.keys()},
+        }
+        artifacts.validate_windows_build(record)
+        with self.assertRaisesRegex(ValueError, "MSYS2 DLL mismatch: libstdc"):
+            artifacts.validate_windows_build(
+                {**record, "members": {**members, "exiftool_files/libstdc++-6.dll": "0" * 64}})
+        with self.assertRaisesRegex(ValueError, "Unexpected Windows ExifTool PE dependency"):
+            artifacts.validate_windows_build(
+                {**record, "peImports": {**imports, "exiftool.exe": ["msys-2.0.dll"]}})
+        with self.assertRaisesRegex(ValueError, "Unreviewed Windows ExifTool link input"):
+            artifacts.validate_windows_build(
+                {**record, "linkInputs": {**record["linkInputs"], "ucrt64/lib/libforeign.a":
+                                            {"owner": "foreign", "sha256": "0" * 64}}})
+
+    def test_windows_exiftool_requires_shared_notice(self):
         placeholder = self.work / "placeholder"
         placeholder.write_bytes(b"placeholder")
         record = self.work / "exiftool.json"
@@ -201,17 +255,6 @@ class ArchiveTests(unittest.TestCase):
         archive_zip(archive, exe_and_records)
         with self.assertRaisesRegex(ValueError, "Missing required archive member: licenses/THIRD_PARTY"):
             artifacts.verify_windows_exiftool(archive, None)
-
-        archive = self.work / "exiftool-with-notice.zip"
-        archive_zip(archive, exe_and_records + [(name, placeholder, 0o644)
-                    for name in artifacts.EXIFTOOL_PACKAGE_NOTICES])
-        source_evidence = self.work / "evidence.json"
-        source_evidence.write_text("{}", encoding="utf-8")
-        source = self.work / "source.zip"
-        archive_zip(source, [(f"recipe/{artifacts.WINLIBS_EVIDENCE_PATH}", source_evidence, 0o644)])
-        with ZipFile(source) as sources:
-            with self.assertRaisesRegex(ValueError, "WinLibs evidence differs"):
-                artifacts.verify_windows_exiftool(archive, sources)
 
     def test_windows_release_index_is_withheld(self):
         with self.assertRaisesRegex(ValueError, "redistribution review"):

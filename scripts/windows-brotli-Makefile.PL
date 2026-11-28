@@ -1,4 +1,4 @@
-# Build the pinned Brotli XS with the portable toolchain's CMake and local static libraries.
+# Build the pinned Brotli XS with the UCRT64 toolchain and local static libraries.
 use strict;
 use warnings;
 use ExtUtils::MakeMaker;

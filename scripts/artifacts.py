@@ -12,11 +12,13 @@ import tarfile
 import tempfile
 import zipfile
 
-from inputs import FFMPEG_SOURCES, ROOT, SOURCES, require_hash, sha256, source_archive
+from inputs import FFMPEG_SOURCES, ROOT, SOURCES, path_spellings, require_hash, sha256, source_archive
 from windows_exiftool import (
-    NOTICE_FILES, PERL_DLLS, RUNTIME_BUILD, RUNTIME_DIR, WIN32_FILE_DATA,
-    WINLIBS_BASE_SOURCES, XS_SOURCES,
+    BROTLI_VERSION, LOCAL_LINK_ARCHIVES, NATIVE_FILES, NOTICE_FILES, PERL_DLLS, RUNTIME_BUILD,
+    RUNTIME_DIR, RUNTIME_DLL_OWNERS, WIN32_FILE_DATA, WINDOWS_SYSTEM_DLLS, XS_SOURCES,
+    required_local_archives,
 )
+from windows_perl import PERL_ABI, PERL_BUILD_INPUTS, PERL_DLL, PERL_IDENTITY, PERL_PATCHES
 from windows_runtime import SOURCE_PACKAGES
 
 PLATFORMS = ("macos-arm64", "macos-x64", "windows-x64")
@@ -25,7 +27,6 @@ FFMPEG_VERSION = SOURCES["ffmpeg"]["version"]
 EXIFTOOL_VERSION = SOURCES["exiftool"]["version"]
 SCHEMA_VERSION = 1
 THIRD_PARTY_NOTICE = "licenses/THIRD_PARTY_NOTICES.md"
-WINLIBS_EVIDENCE_PATH = "docs/windows-winlibs-evidence.json"
 EXIFTOOL_PACKAGE_NOTICES = {
     THIRD_PARTY_NOTICE: "THIRD_PARTY_NOTICES.md",
     "licenses/perl/Third-Party.txt": "licenses/Perl-Third-Party.txt",
@@ -33,13 +34,14 @@ EXIFTOOL_PACKAGE_NOTICES = {
 RECIPE_PATHS = (
     ".gitattributes", ".github/workflows/build.yml", ".gitignore", "AGENTS.md",
     "LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", "docs/RELEASING.md",
-    "docs/SECURITY.md", WINLIBS_EVIDENCE_PATH, "licenses/ExifTool-Artistic.txt",
+    "docs/SECURITY.md", "licenses/ExifTool-Artistic.txt",
     "licenses/Perl-Third-Party.txt", "sources.json",
     "patches/ffmpeg-9.1-raw-zero-seek.patch",
-    "scripts/artifacts.py", "scripts/build.sh", "scripts/inputs.py", "scripts/macos-build-tools.txt",
+    "scripts/artifacts.py", "scripts/build.sh", "scripts/build-windows-perl.sh",
+    "scripts/inputs.py", "scripts/macos-build-tools.txt",
     "scripts/windows-brotli-Makefile.PL", "scripts/windows-exiftool-launcher.c",
     "scripts/windows-exiftool-launcher.manifest", "scripts/windows-exiftool-launcher.rc",
-    "scripts/windows_exiftool.py", "scripts/windows_runtime.py",
+    "scripts/windows_exiftool.py", "scripts/windows_perl.py", "scripts/windows_runtime.py",
     "tests/runtime.py", "tests/test_artifacts.py", "tests/fixtures/README.md",
     "tests/fixtures/local-video.mp4", "tests/fixtures/still.avif",
     "tests/fixtures/still.heic", "tests/fixtures/tiled.heic",
@@ -50,18 +52,14 @@ BUILD_RECORDS = ("config.h", "config_components.h", "toolchain.txt")
 WINDOWS_NOTICES = (
     "COPYING.RUNTIME", "COPYING3", "COPYING.MinGW-w64-runtime.txt", "COPYING.winpthreads",
 )
-WINDOWS_COMPANION_SOURCES = (*dict.fromkeys(SOURCE_PACKAGES.values()), "perl-core",
-                             "strawberry-build", "perl-win32-api", *WINLIBS_BASE_SOURCES,
-                             "winlibs-recipes")
+WINDOWS_COMPANION_SOURCES = (*dict.fromkeys(SOURCE_PACKAGES.values()), "msys2-perl",
+                             "msys2-perl-win32-api", "msys2-mingw-recipes-license", *PERL_PATCHES)
 EXIFTOOL_RECORDS = NOTICE_FILES | {RUNTIME_BUILD} | EXIFTOOL_PACKAGE_NOTICES.keys()
-EXIFTOOL_REQUIRED = {"exiftool.exe", *(f"{RUNTIME_DIR}/{name}" for name in PERL_DLLS),
+EXIFTOOL_REQUIRED = NATIVE_FILES | {
                      f"{RUNTIME_DIR}/exiftool.pl", f"{RUNTIME_DIR}/lib/Image/ExifTool.pm",
                      f"{RUNTIME_DIR}/lib/Image/ExifTool/Geolocation.dat",
                      f"{RUNTIME_DIR}/lib/File/RandomAccess.pm",
-                     f"{RUNTIME_DIR}/lib/{WIN32_FILE_DATA}",
-                     f"{RUNTIME_DIR}/lib/auto/Compress/Raw/Zlib/Zlib.xs.dll",
-                     f"{RUNTIME_DIR}/lib/auto/IO/Compress/Brotli/Brotli.xs.dll",
-                     f"{RUNTIME_DIR}/lib/auto/Win32/FindFile/FindFile.xs.dll"} | NOTICE_FILES
+                     f"{RUNTIME_DIR}/lib/{WIN32_FILE_DATA}"} | NOTICE_FILES
 
 
 def write_json(path, data):
@@ -202,17 +200,18 @@ def validate_config(text, components):
 
 def windows_exiftool_members(work):
     record_path = regular_file(work, f"exiftool/{RUNTIME_BUILD}")
+    require_public_binary(record_path, work)
     record = json.loads(record_path.read_text(encoding="utf-8"))
     entries = record["members"]
     validate_exiftool_inventory(entries)
-    validate_winlibs_provenance(record, winlibs_evidence())
+    validate_windows_build(record)
     members = [(RUNTIME_BUILD, record_path, 0o644)]
     members.extend((name, regular_file(ROOT, path), 0o644)
                    for name, path in EXIFTOOL_PACKAGE_NOTICES.items())
     for name, checksum in entries.items():
         path = regular_file(work, f"exiftool/{name}")
         require_hash(path, checksum)
-        if name.endswith((".exe", ".dll")):
+        if name.endswith((".exe", ".dll", ".pm", ".pl")):
             require_public_binary(path, work)
         members.append((name, path, 0o755 if name == "exiftool.exe" else 0o644))
     return members
@@ -229,32 +228,79 @@ def validate_exiftool_inventory(entries):
             raise ValueError(f"Unsafe Windows ExifTool member: {name}")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError(f"Invalid Windows ExifTool member hash: {name}")
+    if {name for name in entries if name.lower().endswith((".exe", ".dll"))} != NATIVE_FILES:
+        raise ValueError("Unexpected Windows ExifTool native binary inventory")
 
 
-def winlibs_evidence():
-    return json.loads(regular_file(ROOT, WINLIBS_EVIDENCE_PATH).read_text(encoding="utf-8"))
+def validate_windows_build(record):
+    if (record["perlAbi"] != PERL_ABI or record["perlIdentity"] != PERL_IDENTITY
+            or record["securityPatches"] != [SOURCES[key]["sha256"] for key in PERL_PATCHES]
+            or record["nativeVersions"] != {"brotli": BROTLI_VERSION, "zlib": SOURCES["zlib"]["version"]}):
+        raise ValueError("Unexpected Windows ExifTool runtime versions or security inputs")
+    regex = record["compiledRegex"]
+    if set(regex) != {"regexec.c", "regexp.h", "regexec.o"} or any(
+            not re.fullmatch(r"[0-9a-f]{64}", digest) for digest in regex.values()):
+        raise ValueError("Incomplete Windows ExifTool compiled regex evidence")
+    compiler = record["perlCompiler"]
+    if ([item.split("=", 1)[0] for item in compiler] != ["cc", "ld", "ccflags", "optimize", "ldflags"]
+            or any(re.search(r"(?i)\b[a-z]:[\\/]", item) for item in compiler)):
+        raise ValueError("Incomplete Windows ExifTool Perl compiler evidence")
 
+    imports = record["peImports"]
+    if set(imports) != NATIVE_FILES:
+        raise ValueError("Windows ExifTool PE record does not cover its complete binary inventory")
+    allowed_imports = WINDOWS_SYSTEM_DLLS | set(PERL_DLLS)
+    for binary, dlls in imports.items():
+        if not isinstance(dlls, list) or not dlls or any(
+                not isinstance(dll, str) or (dll not in allowed_imports
+                    and not re.fullmatch(r"api-ms-win-crt-[a-z]+-l\d+-\d+-\d+\.dll", dll))
+                for dll in dlls):
+            raise ValueError(f"Unexpected Windows ExifTool PE dependency: {binary}")
 
-def validate_winlibs_provenance(record, evidence):
-    for dll, expected in evidence["runtimeDllSha256"].items():
-        if record["members"].get(f"{RUNTIME_DIR}/{dll}") != expected:
-            raise ValueError(f"Windows ExifTool WinLibs r8 DLL mismatch: {dll}")
-    objects = record["winlibsLinkedObjects"]
-    if (not isinstance(objects, dict) or set(objects) != {"brotli", "findfile", "launcher", "zlib"}
-            or any(not isinstance(items, list) or not items for items in objects.values())):
+    dlls = record["runtimeDlls"]
+    if set(dlls) != RUNTIME_DLL_OWNERS.keys():
+        raise ValueError("Windows ExifTool MSYS2 DLL ownership record is incomplete")
+    for dll, package in RUNTIME_DLL_OWNERS.items():
+        pin = SOURCES[package]
+        if (dlls[dll] != {"package": package, "sha256": pin["memberSha256"],
+                          "recipeSha256": pin["recipeSha256"]}
+                or record["members"].get(f"{RUNTIME_DIR}/{dll}") != pin["memberSha256"]):
+            raise ValueError(f"Windows ExifTool MSYS2 DLL mismatch: {dll}")
+
+    inputs, linkage = record["linkInputs"], record["linkage"]
+    if set(linkage) != NATIVE_FILES - {f"{RUNTIME_DIR}/{dll}" for dll in RUNTIME_DLL_OWNERS}:
         raise ValueError("Windows ExifTool static link record is incomplete")
-    if any(not isinstance(item, str) for items in objects.values() for item in items):
-        raise ValueError("Invalid Windows ExifTool link input")
-    expected_files = {Path(name).name for name in evidence["linkInputSha256"]}
-    actual_files = {item.split("(", 1)[0] for entries in objects.values() for item in entries}
-    if actual_files != expected_files:
-        raise ValueError("Windows ExifTool link inputs differ from the reviewed provenance inventory")
+    local = {name: spec[0] for name, spec in LOCAL_LINK_ARCHIVES.items()}
+    for name, entry in inputs.items():
+        owner = entry["owner"]
+        if (not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])
+                or (name in local and local[name] != owner)
+                or (name not in local and (owner not in SOURCE_PACKAGES
+                    or not re.fullmatch(r"ucrt64/(?:[A-Za-z0-9_.+-]+/)*[A-Za-z0-9_.+-]+\.(?:a|o)", name)
+                    or any(part in {".", ".."} for part in name.split("/"))))):
+            raise ValueError(f"Unreviewed Windows ExifTool link input: {name}")
+    used = set()
+    for target, files in linkage.items():
+        if not files or set(files) - inputs.keys() or any(
+                not isinstance(members, list) or not members or any(
+                    not isinstance(member, str) or re.search(r"[/\\:\r\n]", member) for member in members)
+                for members in files.values()):
+            raise ValueError(f"Incomplete Windows ExifTool link inputs for {target}")
+        used.update(files)
+        if set(files) & local.keys() != required_local_archives(target):
+            raise ValueError(f"Unexpected local Windows ExifTool archives for {target}")
+        owners = {SOURCE_PACKAGES.get(inputs[file]["owner"]) for file in files}
+        if not {"msys2-gcc", "msys2-crt"} <= owners:
+            raise ValueError(f"Missing Windows GCC/CRT link evidence for {target}")
+    if used != inputs.keys():
+        raise ValueError("Unused Windows ExifTool link inputs in the provenance record")
 
 
 def require_public_binary(binary, work):
-    contents = binary.read_bytes()
+    contents = binary.read_bytes().lower()
     for path in (ROOT, work, Path.home()):
-        for value in {str(path), path.as_posix()}:
+        for value in path_spellings(path):
+            value = value.lower()
             if len(value) > 3 and (value.encode("utf-8") in contents
                                   or value.encode("utf-16le") in contents):
                 raise ValueError(f"A local build path is embedded in {binary.name}")
@@ -335,7 +381,7 @@ def index(directory, platform, revision, state):
         "provisioning": provisioning(platform, revision),
     }
     if platform == "windows-x64":
-        data["buildInputs"] = {"strawberry-perl": SOURCES["strawberry-perl"]}
+        data["buildInputs"] = {name: SOURCES[name] for name in PERL_BUILD_INPUTS}
     write_json(directory / "artifacts.json", data)
     (directory / "SHA256SUMS").write_bytes(checksum_text(packages))
 
@@ -372,15 +418,9 @@ def verify_windows_exiftool(path, sources):
         require_inventory(archive, {RUNTIME_BUILD, *EXIFTOOL_PACKAGE_NOTICES, *entries})
         if archive.getinfo("exiftool.exe").external_attr >> 16 & 0o755 != 0o755:
             raise ValueError("Missing executable permissions for exiftool.exe")
-        if record["perlAbi"] != "5.42.3|MSWin32-x64-multi-thread|13.2.0|xs.dll" or (
-                record["perlZlib"] != SOURCES["zlib"]["version"]):
-            raise ValueError("Unexpected Windows ExifTool runtime versions")
-        if set(record["peImports"]) != {name for name in entries if name.endswith((".exe", ".dll"))}:
-            raise ValueError("Windows ExifTool PE record does not cover its complete binary inventory")
-        evidence = winlibs_evidence()
-        if json.loads(sources.read(f"recipe/{WINLIBS_EVIDENCE_PATH}")) != evidence:
-            raise ValueError("Windows source companion WinLibs evidence differs from the reviewed inventory")
-        validate_winlibs_provenance(record, evidence)
+        validate_windows_build(record)
+        if PERL_IDENTITY.encode("ascii") not in archive.read(f"{RUNTIME_DIR}/{PERL_DLL}"):
+            raise ValueError("Windows ExifTool Perl DLL lacks the compiled security build identity")
         for name, expected in entries.items():
             if hashlib.sha256(archive.read(name)).hexdigest() != expected:
                 raise ValueError(f"Windows ExifTool member mismatch: {name}")
@@ -410,7 +450,7 @@ def verify(directory):
     dependencies = source_inputs(platform)
     if data["sources"] != {name: SOURCES[name] for name in dependencies}:
         raise ValueError("Artifact metadata does not match the source lock")
-    if windows and data.get("buildInputs") != {"strawberry-perl": SOURCES["strawberry-perl"]}:
+    if windows and data.get("buildInputs") != {name: SOURCES[name] for name in PERL_BUILD_INPUTS}:
         raise ValueError("Artifact metadata does not match the Windows build input lock")
     if data["provisioning"] != provisioning(platform, revision):
         raise ValueError("Unexpected provisioning layout")

@@ -1,4 +1,4 @@
-/* Windows bootstrap for the sibling ExifTool and Strawberry Perl runtime. */
+/* Windows bootstrap for the sibling ExifTool and CasaMemo Perl runtime. */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <stdio.h>
@@ -45,7 +45,7 @@ int wmain(int argc, wchar_t **argv)
         fprintf(stderr, "ExifTool could not set the DLL search path (Windows error %lu).\n", GetLastError());
         return 1;
     }
-    runtime_path(L"perl542.dll");
+    runtime_path(L"perl544.dll");
     HMODULE library = LoadLibraryExW(path, NULL, LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS);
     if (!library) {
         fprintf(stderr, "ExifTool could not load its Perl runtime (Windows error %lu).\n", GetLastError());
