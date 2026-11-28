@@ -13,6 +13,23 @@ The 9.1 release source contains the TIFF Deflate length check for CVE-2026-70631
 
 The FFmpeg CLI keeps only file and pipe protocols. Its enabled demuxers exclude playlists and network-based input. The application remains responsible for safe input paths, time and resource bounds and safe process invocation. Run all release checks against the files that will actually be distributed.
 
+## Windows FFmpeg and FFprobe redistribution
+
+The previous native build used MSYS2 GCC 16.2.0-7 and MinGW-w64 CRT and winpthreads
+14.0.0.r598.ge3d18511f-1. The PE import tables identify Windows system DLLs and
+UCRT redirects. Static runtime code requires a separate inventory.
+
+The [GCC Runtime Library Exception](https://www.gnu.org/licenses/gcc-exception-3.1.html)
+applies to files that carry the exception and to eligible compilation processes.
+The [MinGW-w64 CRT package](https://packages.msys2.org/base/mingw-w64-crt) lists
+ZPL-2.1. The [winpthreads notice](https://github.com/mingw-w64/mingw-w64/blob/master/mingw-w64-libraries/winpthreads/COPYING)
+contains the required copyright and permission notices. Retain the applicable
+runtime notices and verify the exact selected objects against the matching
+MSYS2 source revisions, build recipes and patches. A compiler version and a PE
+import list alone cannot establish that static source inventory. Windows CI
+builds and tests the candidate, with binary uploads and finalization withheld
+until this review is complete.
+
 ## Windows ExifTool
 
 The official ExifTool 13.64 x64 ZIP is authentic by the [published hash](https://sourceforge.net/projects/exiftool/files/) and extracts successfully. The payload includes Strawberry Perl 5.32.1.1 and a static Brotli 1.0.4 inside IO::Compress::Brotli 0.004001. Compared with the verified Strawberry Perl distribution, the Windows launcher, Brotli XS and Win32::FindFile XS are additional native builds. Corresponding source for a module version alone cannot show the exact inputs and patches used by those DLLs.
@@ -21,4 +38,18 @@ ExifTool uses Brotli to read compressed EXIF and XMP metadata in JPEG XL. The bu
 
 A source-verifiable replacement is available for the Brotli component. [IO::Compress::Brotli 0.023](https://metacpan.org/release/TIMLEGGE/IO-Compress-Brotli-0.023) embeds Brotli 1.2.1 and retains the two-argument decoder API ExifTool uses. The source archive matched CPAN’s SHA-256 `fb30386115589dbdc71ff3ab0af1b67c33c202df4bbdb4e00093f1c50a2cf2f8`. A candidate assembly can reuse the [maintained Strawberry Perl 5.42.3.1 x64 portable runtime](https://strawberryperl.com/), the official ExifTool source, the [CC0 launcher source](https://oliverbetz.de/pages/Artikel/Portable-Perl-Applications), and the source of any needed XS libraries, including [Win32::FindFile](https://metacpan.org/release/GRIAN/Win32-FindFile-0.15). Compile only the XS extensions and launcher against the selected portable Perl toolchain. Verify the ABI, preserve Unicode paths, keep all DLLs and notices required at runtime, identify each linked component and retain matching source and build instructions. Select the minimal runtime with an auditable inventory rather than distributing a full Perl development kit.
 
-No tested Windows assembly with this closure is pinned or generated here. Keep the official 13.64 Windows ZIP and unverified substitutes out of CI distribution and public releases. Native acceptance must include JPEG XL Brotli EXIF and XMP extraction, ordinary metadata, Unicode paths, original integrity, full PE dependency closure and the existing sibling `exiftool_files` layout on the Windows baseline. Upstream labels the pinned macOS source version 13.64 a development release. Retain its stock macOS functionality via the upstream Perl archive and OS Perl. Windows bundled Brotli functionality must be preserved in the future candidate.
+The published portable Strawberry Perl 5.42.3.1 x64 ZIP was checked against its
+publisher SHA-256 `6a081a811781c30aca51dbc036afd93092af91e3297901f02c17043795a10690`.
+It uses the threaded x64 Perl 5.42 ABI and a GCC 13.2.0 UCRT toolchain. Its core
+imports the bundled libgcc, libstdc++ and libwinpthread DLLs. The portable ZIP
+contains neither the Brotli nor Win32::FindFile XS extension. The Win32::FindFile
+0.15 source matched its CPAN SHA-256
+`bfd4ef029f0a0e0d0c952d8bdc1bbfdf1ca63e4bb120752d35597e4e9a6e9578`.
+The launcher author's sample source download had SHA-256
+`72a112caac70de4cab56971d0bf1ea8050f8228ed036ec88e7657d40cc08ce0e`.
+A native assembly
+must build these extensions against this Perl ABI, build and verify the launcher
+and its sibling runtime discovery, and identify the complete DLL and notice
+closure. Match the bundled compiler runtime DLLs to their corresponding source
+and patches before redistribution. Native Windows 10 validation is pending.
+No candidate with this closure has been assembled or approved for release. Keep the official 13.64 Windows ZIP and unverified substitutes out of CI distribution and public releases. Native acceptance must include JPEG XL Brotli EXIF and XMP extraction, ordinary metadata, Unicode paths, original integrity, full PE dependency closure and the existing sibling `exiftool_files` layout on the Windows baseline. Upstream labels the pinned macOS source version 13.64 a development release. Retain its stock macOS functionality via the upstream Perl archive and OS Perl. Windows bundled Brotli functionality must be preserved in the future candidate.

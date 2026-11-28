@@ -20,6 +20,23 @@ ZIP_DATE = (1980, 1, 1, 0, 0, 0)
 FFMPEG_VERSION = SOURCES["ffmpeg"]["version"]
 EXIFTOOL_VERSION = SOURCES["exiftool"]["version"]
 SCHEMA_VERSION = 1
+RECIPE_PATHS = (
+    ".gitattributes", ".github/workflows/build.yml", ".gitignore", "AGENTS.md",
+    "LICENSE", "README.md", "THIRD_PARTY_NOTICES.md", "docs/RELEASING.md",
+    "docs/SECURITY.md", "licenses/ExifTool-Artistic.txt", "sources.json",
+    "patches/ffmpeg-9.1-raw-zero-seek.patch",
+    "scripts/artifacts.py", "scripts/build.sh", "scripts/inputs.py", "scripts/macos-build-tools.txt",
+    "tests/runtime.py", "tests/test_artifacts.py", "tests/fixtures/README.md",
+    "tests/fixtures/local-video.mp4", "tests/fixtures/still.avif",
+    "tests/fixtures/still.heic", "tests/fixtures/tiled.heic",
+    "tests/fixtures/video.h264", "tests/fixtures/video.hevc", "tests/fixtures/pq.heic",
+    "tests/fixtures/profiled.heic",
+)
+BUILD_RECORDS = ("config.h", "config_components.h", "toolchain.txt")
+WINDOWS_NOTICES = (
+    "COPYING.RUNTIME", "COPYING3", "COPYING.MinGW-w64-runtime.txt", "COPYING.winpthreads",
+)
+
 
 
 def write_json(path, data):
@@ -47,26 +64,53 @@ def layout(platform, revision):
     return ffmpeg, ffprobe, exiftool, source
 
 
+def regular_file(root, relative):
+    path = root
+    parts = Path(relative).parts
+    for part in parts:
+        path = path / part
+        info = path.lstat()
+        if (stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0)
+                & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+            raise ValueError(f"Unsafe archive input: {relative}")
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"Expected a regular archive input: {relative}")
+    return path
+
+
+def notice_names():
+    return {"licenses/THIRD_PARTY_NOTICES.md"} | {
+        f"licenses/{name}/{filename}"
+        for name in FFMPEG_SOURCES for filename in SOURCES[name]["notices"]
+    }
+
+
 def notices(work):
     result = []
-    sources = work / "source"
     for name in FFMPEG_SOURCES:
         record = SOURCES[name]
         for filename in record["notices"]:
-            result.append((f"licenses/{name}/{filename}",
-                           sources / record["directory"] / filename, 0o644))
-    result.append(("licenses/THIRD_PARTY_NOTICES.md", ROOT / "THIRD_PARTY_NOTICES.md", 0o644))
+            path = regular_file(work, f"source/{record['directory']}/{filename}")
+            result.append((f"licenses/{name}/{filename}", path, 0o644))
+    result.append(("licenses/THIRD_PARTY_NOTICES.md",
+                   regular_file(ROOT, "THIRD_PARTY_NOTICES.md"), 0o644))
     return result
 
 
 def recipe_files():
-    files = [ROOT / name for name in ("AGENTS.md", "LICENSE", "README.md", "sources.json",
-                                      "THIRD_PARTY_NOTICES.md")]
-    for directory in ("scripts", "docs", "licenses", "tests", ".github/workflows"):
-        files.extend(item for item in (ROOT / directory).rglob("*")
-                     if item.is_file() and "__pycache__" not in item.parts and not item.name.startswith("."))
-    return [(f"recipe/{item.relative_to(ROOT).as_posix()}", item,
-             0o755 if item.suffix == ".sh" else 0o644) for item in files]
+    # Source companions can be rebuilt outside a Git checkout. In a checkout,
+    # fail closed if a required input is ignored by repository or local rules.
+    if (ROOT / ".git").exists():
+        result = subprocess.run(
+            ["git", "check-ignore", "--no-index", "-z", "--stdin"], cwd=ROOT,
+            input=("\0".join(RECIPE_PATHS) + "\0").encode(), stdout=subprocess.PIPE,
+        )
+        if result.returncode == 0:
+            raise ValueError("An approved recipe path is ignored by Git")
+        if result.returncode != 1:
+            result.check_returncode()
+    return [(f"recipe/{name}", regular_file(ROOT, name), 0o755 if name.endswith(".sh") else 0o644)
+            for name in RECIPE_PATHS]
 
 
 def binary_names(platform):
@@ -74,12 +118,28 @@ def binary_names(platform):
     return [f"ffmpeg{suffix}", f"ffprobe{suffix}"]
 
 
-def build_record(work):
-    record = work / "metadata"
-    return [
-        (f"build/{file.relative_to(record).as_posix()}", file, 0o644)
-        for file in sorted(record.rglob("*")) if file.is_file()
-    ]
+def build_record_names(platform):
+    names = {f"build/{name}" for name in BUILD_RECORDS}
+    if platform == "windows-x64":
+        names.update(f"build/windows-notices/{name}" for name in WINDOWS_NOTICES)
+    return names
+
+
+def build_record(work, platform):
+    return [(name, regular_file(work, f"metadata/{name[6:]}"), 0o644)
+            for name in sorted(build_record_names(platform))]
+
+
+def require_inventory(archive, expected):
+    actual = set(archive.namelist())
+    missing = sorted(expected - actual)
+    if missing:
+        raise ValueError(f"Missing required archive member: {', '.join(missing)}")
+    if actual - expected:
+        raise ValueError(f"Unexpected archive member: {', '.join(sorted(actual - expected))}")
+    for item in archive.infolist():
+        if not item.file_size:
+            raise ValueError(f"Empty required archive member: {item.filename}")
 
 
 def validate_config(text, components):
@@ -92,7 +152,8 @@ def validate_config(text, components):
     for component in (
         "IMAGE_JPEG_PIPE_DEMUXER", "IMAGE_PNG_PIPE_DEMUXER", "IMAGE_TIFF_PIPE_DEMUXER",
         "WEBP_ANIM_DECODER", "WEBP_ANIM_DEMUXER", "LIBWEBP_ANIM_ENCODER", "HEVC_DECODER",
-        "H264_DECODER", "TIFF_DECODER", "LIBDAV1D_DECODER", "PNG_ENCODER", "MOV_DEMUXER",
+        "H264_DECODER", "H264_DEMUXER", "HEVC_DEMUXER", "TIFF_DECODER",
+        "LIBDAV1D_DECODER", "PNG_ENCODER", "MOV_DEMUXER",
         "ICCGEN_FILTER", "ICCDETECT_FILTER", "XSTACK_FILTER", "COLORSPACE_FILTER",
     ):
         if not re.search(rf"^#define CONFIG_{component} 1$", components, re.MULTILINE):
@@ -111,12 +172,12 @@ def package(platform, cache, work, destination, revision):
     with tempfile.TemporaryDirectory(dir=destination.parent) as temporary:
         staging = Path(temporary) / "candidate"
         staging.mkdir()
-        evidence = build_record(work)
+        evidence = build_record(work, platform)
         validate_config((work / "metadata/config.h").read_text(),
                         (work / "metadata/config_components.h").read_text())
         runtime = []
         for executable in binary_names(platform):
-            binary = work / "ffmpeg" / executable
+            binary = regular_file(work, f"ffmpeg/{executable}")
             contents = binary.read_bytes()
             for value in (str(ROOT), str(work), os.path.expanduser("~")):
                 if len(value) > 3 and value.encode() in contents:
@@ -158,6 +219,8 @@ def provisioning(platform, revision):
 
 
 def index(directory, platform, revision, state):
+    if platform == "windows-x64" and state == "owner-finalized":
+        raise ValueError("Windows runtime redistribution review is still open")
     _, _, exiftool, _ = layout(platform, revision)
     dependencies = FFMPEG_SOURCES + (("exiftool",) if exiftool else ())
     packages = []
@@ -210,6 +273,8 @@ def verify(directory):
             or not re.fullmatch(r"r[1-9][0-9]*", revision)
             or data["state"] not in {"ci-candidate", "owner-finalized"}):
         raise ValueError("Invalid artifact metadata")
+    if platform == "windows-x64" and data["state"] == "owner-finalized":
+        raise ValueError("Windows runtime redistribution review is still open")
     ffmpeg, ffprobe, exiftool, source = layout(platform, revision)
     packages = data["artifacts"]
     records = [(item["filename"], item["role"], item["format"]) for item in packages]
@@ -235,7 +300,25 @@ def verify(directory):
     runtime = [(ffmpeg, names[:1] if ffprobe else names)]
     if ffprobe:
         runtime.append((ffprobe, names[1:]))
+    records = notice_names() | build_record_names(platform)
+    upstream = {f"upstream/{SOURCES[name]['file']}" for name in dependencies}
+    recipe = {f"recipe/{name}" for name in RECIPE_PATHS}
     with zipfile.ZipFile(directory / source) as source_archive_zip:
+        require_inventory(source_archive_zip, records | upstream | recipe)
+        for filename, expected in runtime:
+            path = directory / filename
+            verify_zip(path)
+            with zipfile.ZipFile(path) as archive:
+                bins = {f"bin/{name}" for name in expected}
+                require_inventory(archive, records | bins)
+                for name in bins:
+                    if archive.getinfo(name).external_attr >> 16 & 0o755 != 0o755:
+                        raise ValueError(f"Missing executable permissions for {name}")
+                validate_config(archive.read("build/config.h").decode(),
+                                archive.read("build/config_components.h").decode())
+                for key in sorted(records):
+                    if archive.read(key) != source_archive_zip.read(key):
+                        raise ValueError(f"Runtime and source records differ: {key}")
         for name in dependencies:
             item = SOURCES[name]
             with source_archive_zip.open(f"upstream/{item['file']}") as stream:
@@ -244,25 +327,6 @@ def verify(directory):
                     digest.update(chunk)
                 if digest.hexdigest() != item["sha256"]:
                     raise ValueError(f"Corresponding source mismatch: {name}")
-        for filename, expected in runtime:
-            path = directory / filename
-            verify_zip(path)
-            with zipfile.ZipFile(path) as archive:
-                expected_bins = {f"bin/{name}" for name in expected}
-                if expected_bins != {name for name in archive.namelist() if name.startswith("bin/")}:
-                    raise ValueError(f"Unexpected executable layout in {filename}")
-                for name in expected_bins:
-                    if archive.getinfo(name).external_attr >> 16 & 0o755 != 0o755:
-                        raise ValueError(f"Missing executable permissions for {name}")
-                validate_config(archive.read("build/config.h").decode(),
-                                archive.read("build/config_components.h").decode())
-                if platform == "windows-x64":
-                    for notice in ("COPYING.RUNTIME", "COPYING3", "COPYING.MinGW-w64-runtime.txt",
-                                   "COPYING.winpthreads"):
-                        archive.getinfo(f"build/windows-notices/{notice}")
-                for key in (member for member in archive.namelist() if not member.startswith("bin/")):
-                    if archive.read(key) != source_archive_zip.read(key):
-                        raise ValueError(f"Runtime and source records differ: {key}")
     if exiftool:
         record = SOURCES["exiftool"]
         require_hash(directory / exiftool, record["sha256"])

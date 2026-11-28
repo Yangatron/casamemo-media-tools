@@ -1,11 +1,14 @@
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from zipfile import ZipFile, ZipInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
+import artifacts
 from artifacts import archive_zip, provisioning, verify_zip
 from inputs import require_hash, sha256
 
@@ -70,6 +73,84 @@ class ArchiveTests(unittest.TestCase):
             self.assertNotEqual(tools["ffmpeg"]["asset"], tools["ffprobe"]["asset"])
             self.assertEqual(tools["ffmpeg"]["version"], tools["ffprobe"]["version"])
             self.assertEqual(tools["ffprobe"]["checksumTarget"], "archive")
+
+
+    def test_recipe_excludes_local_and_unapproved_files(self):
+        scripts = self.work / "scripts"
+        scripts.mkdir()
+        (scripts / "build.sh").write_text("build instructions")
+        (scripts / "signing.p12").write_text("synthetic local signing material")
+        (scripts / "private.md").write_text("synthetic unapproved file")
+        with patch.multiple(artifacts, ROOT=self.work, RECIPE_PATHS=("scripts/build.sh",)):
+            package = self.work / "source.zip"
+            archive_zip(package, artifacts.recipe_files())
+            with ZipFile(package) as archive:
+                self.assertEqual(archive.namelist(), ["recipe/scripts/build.sh"])
+
+    def test_recipe_rejects_ignored_approved_path(self):
+        (self.work / ".git").mkdir()
+        ignored = subprocess.CompletedProcess([], returncode=0, stdout=b"scripts/build.sh")
+        with patch.multiple(artifacts, ROOT=self.work, RECIPE_PATHS=("scripts/build.sh",)):
+            with patch.object(artifacts.subprocess, "run", return_value=ignored) as git:
+                with self.assertRaisesRegex(ValueError, "ignored by Git"):
+                    artifacts.recipe_files()
+                self.assertIn("--no-index", git.call_args.args[0])
+
+    def test_recipe_rejects_symlinked_file_or_directory(self):
+        outside = self.work / "outside"
+        outside.mkdir()
+        (outside / "build.sh").write_text("synthetic private file")
+        for directory_link in (True, False):
+            staged = self.work / str(directory_link)
+            staged.mkdir()
+            try:
+                if directory_link:
+                    (staged / "scripts").symlink_to(outside, target_is_directory=True)
+                else:
+                    (staged / "scripts").mkdir()
+                    (staged / "scripts" / "build.sh").symlink_to(outside / "build.sh")
+            except OSError:
+                self.skipTest("Local symlink creation is unavailable")
+            with self.subTest(directory_link=directory_link):
+                with patch.multiple(artifacts, ROOT=staged, RECIPE_PATHS=("scripts/build.sh",)):
+                    with self.assertRaisesRegex(ValueError, "Unsafe archive input"):
+                        artifacts.recipe_files()
+
+    def test_verify_rejects_missing_inventory_after_reindexing(self):
+        sample = self.work / "sample"
+        sample.write_bytes(b"placeholder payload")
+        platform, revision = "windows-x64", "r1"
+        runtime, _, _, sources = artifacts.layout(platform, revision)
+        records = artifacts.notice_names() | artifacts.build_record_names(platform)
+        upstream = {f"upstream/{artifacts.SOURCES[name]['file']}" for name in artifacts.FFMPEG_SOURCES}
+        recipe = {f"recipe/{name}" for name in artifacts.RECIPE_PATHS}
+        bins = {f"bin/{name}" for name in artifacts.binary_names(platform)}
+        missing_cases = (
+            ("licenses/ffmpeg/COPYING.LGPLv2.1", True, True),
+            ("build/toolchain.txt", True, True),
+            ("build/windows-notices/COPYING.winpthreads", True, True),
+            ("recipe/scripts/build.sh", True, False),
+            (min(upstream), True, False),
+            ("licenses/libwebp/PATENTS", False, True),
+        )
+        for i, (missing, omit_source, omit_runtime) in enumerate(missing_cases):
+            with self.subTest(missing=missing):
+                folder = self.work / str(i)
+                folder.mkdir()
+                archive_zip(folder / sources, [(name, sample, 0o644)
+                            for name in records | upstream | recipe
+                            if name != missing or not omit_source])
+                archive_zip(folder / runtime, [(name, sample, 0o755 if name in bins else 0o644)
+                            for name in records | bins if name != missing or not omit_runtime])
+                artifacts.index(folder, platform, revision, "ci-candidate")
+                with self.assertRaisesRegex(ValueError, "Missing required archive member:") as error:
+                    artifacts.verify(folder)
+                self.assertIn(missing, str(error.exception))
+
+    def test_windows_release_index_is_withheld(self):
+        with self.assertRaisesRegex(ValueError, "redistribution review"):
+            artifacts.index(self.work, "windows-x64", "r1", "owner-finalized")
+        self.assertFalse((self.work / "artifacts.json").exists())
 
 
 if __name__ == "__main__":

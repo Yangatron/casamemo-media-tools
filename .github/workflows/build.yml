@@ -38,6 +38,7 @@ jobs:
           update: true
           install: >-
             make
+            patch
             curl
             diffutils
             mingw-w64-ucrt-x86_64-gcc
@@ -76,7 +77,8 @@ jobs:
           bash scripts/build.sh windows-x64
           python tests/runtime.py dist/windows-x64
 
-      - name: Upload validated candidate
+      - name: Upload validated macOS candidate
+        if: runner.os == 'macOS'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: media-tools-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}

@@ -1,5 +1,6 @@
 """Validate candidate native binaries and exercise CasaMemo media operations."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -105,6 +106,76 @@ def add_jpeg_orientation(source, output):
                        + exif + original[2:])
 
 
+def png_icc(path):
+    data = path.read_bytes()
+    index = 8
+    while index < len(data):
+        length, kind = struct.unpack_from(">I4s", data, index)
+        if kind == b"iCCP":
+            _, payload = data[index + 8:index + 8 + length].split(b"\0", 1)
+            require(payload[0] == 0, "Unexpected PNG ICC compression")
+            return zlib.decompress(payload[1:])
+        index += length + 12
+    raise RuntimeError("PNG has no ICC profile")
+
+
+def heic_checks(work, convert, probe, exiftool):
+    def quadrants(rgb, width, height):
+        require(len(rgb) == width * height * 3, "Unexpected RGB frame size")
+        corners = []
+        for y in (height // 4, 3 * height // 4):
+            for x in (width // 4, 3 * width // 4):
+                index = 3 * (y * width + x)
+                corners.append(tuple(component > 125 for component in rgb[index:index + 3]))
+        return corners
+
+    red, green, blue, yellow = (True, False, False), (False, True, False), (False, False, True), (True, True, False)
+    tiled = FIXTURES / "tiled.heic"
+    groups = probe("-show_stream_groups", tiled)["stream_groups"]
+    require(any(group["type"] == "Tile Grid" and group["nb_streams"] == 4 for group in groups),
+            "Tiled HEIC is missing its four-tile stream group")
+    graph = ("[0:0][0:1][0:2][0:3]xstack=inputs=4:layout=0_0|512_0|0_512|512_512,"
+             "crop=1024:768:0:0:exact=1,setparams=range=pc:colorspace=smpte170m,"
+             "scale=64:48:flags=lanczos,format=rgb24[image]")
+    pixels = convert("-noautorotate", "-f", "mov", "-i", tiled, "-filter_complex_threads", "1",
+                     "-filter_complex", graph, "-map", "[image]", "-frames:v", "1", "-f", "rawvideo", "-")
+    require(quadrants(pixels, 64, 48) == [red, green, blue, yellow],
+            "Explicit HEIC tile assembly changed the quadrant order or colour")
+
+    profiled = FIXTURES / "profiled.heic"
+    transform = "transpose=clock,vflip,format=rgb24"
+    mirrored = convert("-noautorotate", "-i", profiled, "-vf", transform,
+                       "-frames:v", "1", "-f", "rawvideo", "-")
+    require(quadrants(mirrored, 48, 64) == [yellow, green, blue, red],
+            "HEIC mirrored rotation produced incorrect pixels")
+    convert("-noautorotate", "-i", profiled, "-vf", transform, "-frames:v", "1", "oriented-heic.png")
+    oriented = work / "oriented-heic.png"
+    require(struct.unpack_from(">II", oriented.read_bytes(), 16) == (48, 64),
+            "HEIC mirrored rotation did not swap image dimensions")
+    output_profile = png_icc(oriented)
+    require(hashlib.sha256(output_profile).hexdigest()
+            == "904d9d78a48e10b01a7d76c57c9321df5ab3228b9441489d21fbc4fa53b5fe41",
+            "HEIC embedded ICC profile changed after decode and transform")
+    if exiftool:
+        metadata = json.loads(command(exiftool, "-config", "", "-json", "-n",
+                                      "-IFD0:Orientation", profiled))[0]
+        require(metadata["Orientation"] == 7, "Mirrored HEIC fixture lost its EXIF orientation")
+        require(command(exiftool, "-config", "", "-b", "-ICC_Profile", profiled) == output_profile,
+                "HEIC ICC extraction disagrees with the decoded PNG")
+
+    hdr = FIXTURES / "pq.heic"
+    stream = probe("-select_streams", "v:0", "-show_streams", hdr)["streams"][0]
+    expected = {"pix_fmt": "yuv420p10le", "color_primaries": "bt2020",
+                "color_transfer": "smpte2084", "color_space": "bt2020nc"}
+    require(all(stream.get(key) == value for key, value in expected.items()),
+            "10-bit HEIC HDR signalling changed")
+    decoded = convert("-noautorotate", "-i", hdr, "-pix_fmt", "yuv420p10le",
+                      "-frames:v", "1", "-f", "rawvideo", "-")
+    require(len(decoded) == 64 * 48 * 3, "Incorrect bit depth or dimensions for the PQ HEIC")
+    middle = struct.unpack_from("<H", decoded, 2 * (24 * 64 + 32))[0]
+    require(256 < middle < 1024, "PQ HEIC sample was clipped or reduced to 8 bits")
+
+
 def media_checks(work, ffmpeg, ffprobe, exiftool):
     for binary in (ffmpeg, ffprobe):
         output = command(binary, "-version").decode()
@@ -129,8 +200,11 @@ def media_checks(work, ffmpeg, ffprobe, exiftool):
     tiff = write_tiff(work / "deflate.tiff")
     convert("-i", "frame-01.png", "-frames:v", "1", "-c:v", "mjpeg", "orientation-source.jpg")
     add_jpeg_orientation(work / "orientation-source.jpg", work / "orientation.jpg")
+    raw_h265 = work / "video.h265"
+    shutil.copyfile(FIXTURES / "video.hevc", raw_h265)
     inputs = [*work.glob("frame-*.png"), work / "deflate.tiff", work / "orientation.jpg",
-              *FIXTURES.glob("*.heic"), *FIXTURES.glob("*.avif"), FIXTURES / "local-video.mp4"]
+              *FIXTURES.glob("*.heic"), *FIXTURES.glob("*.avif"), FIXTURES / "local-video.mp4",
+              FIXTURES / "video.h264", FIXTURES / "video.hevc", raw_h265]
     originals = {item: sha256(item) for item in inputs}
     require(pixels("frame-01.png") == orange * (SIZE[0] * SIZE[1]), "PNG transparency changed")
     require(pixels("deflate.tiff", "rgb24") == tiff, "Deflate TIFF pixels changed")
@@ -156,16 +230,25 @@ def media_checks(work, ffmpeg, ffprobe, exiftool):
         dimensions = struct.unpack(">II", (work / (name + ".png")).read_bytes()[16:24])
         require(dimensions == ((1024, 768) if name == "tiled.heic" else (64, 48)),
                 f"Incorrect decoded dimensions for {name}: {dimensions}")
-    groups = probe("-show_stream_groups", FIXTURES / "tiled.heic")["stream_groups"]
-    require(any(group["type"] == "Tile Grid" and group["nb_streams"] > 1 for group in groups),
-            "Tiled HEIC is missing a multi-tile stream group")
+    heic_checks(work, convert, probe, exiftool)
+
+    for raw, codec in ((FIXTURES / "video.h264", "h264"), (raw_h265, "hevc"), (FIXTURES / "video.hevc", "hevc")):
+        result = probe("-show_entries", "format=format_name:stream=codec_name,width,height", raw)
+        stream = result["streams"][0]
+        require(result["format"]["format_name"] == codec and stream["codec_name"] == codec
+                and (stream["width"], stream["height"]) == (64, 48),
+                f"Raw {raw.suffix} stream was not probed correctly")
+        image = work / (raw.suffix[1:] + "-frame.png")
+        convert("-ss", "0", "-i", raw, "-frames:v", "1", "-an", "-f", "image2", image)
+        require(struct.unpack_from(">II", image.read_bytes(), 16) == (64, 48),
+                f"Raw {raw.suffix} frame extraction changed the PNG dimensions")
 
     video = FIXTURES / "local-video.mp4"
     result = probe("-show_entries", "format=format_name,duration:stream=index,codec_type,codec_name,width,height",
                    video)
     require(result["streams"][0]["codec_name"] == "h264", "FFprobe did not identify H.264")
-    convert("-ss", "0.5", "-i", video, "-frames:v", "1", "-an", "-f", "image2", "video-frame.jpg")
-    require((work / "video-frame.jpg").stat().st_size > 0, "Video frame extraction failed")
+    convert("-ss", "0.5", "-i", video, "-frames:v", "1", "-an", "-f", "image2", "video-frame.png")
+    require((work / "video-frame.png").stat().st_size > 0, "Video frame extraction failed")
 
     if exiftool:
         require(command(exiftool, "-ver").decode().strip() == EXIFTOOL_VERSION,

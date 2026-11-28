@@ -4,7 +4,7 @@ MIT applies to the independently authored repository material. Upstream programs
 
 | Included component | Version | Licence and purpose |
 | --- | --- | --- |
-| FFmpeg and FFprobe | 9.1 | LGPL 2.1 or later configuration. The two executables use their matching FFmpeg libraries and retain all upstream licence and credit material. |
+| FFmpeg and FFprobe | 9.1 | LGPL 2.1 or later configuration. The two executables use their matching FFmpeg libraries and retain all upstream licence and credit material. The [raw zero-seek patch](patches/ffmpeg-9.1-raw-zero-seek.patch) is provided under the licence of the affected FFmpeg source. |
 | libwebp and libsharpyuv | 1.6.0 | Upstream BSD terms and patent grant. WebP encoding and animation assembly. FFmpeg's native decoders read the output. |
 | zlib | 1.4 | zlib licence. PNG and Deflate-compressed TIFF decoding and encoding support. |
 | Little CMS | 2.20 | MIT. ICC profile detection and generation. |

@@ -137,6 +137,7 @@ meson install -C "$work/dav1d" --no-rebuild
 
 (
     cd "${ffmpeg[0]}"
+    patch -p1 --forward < "$root/patches/ffmpeg-9.1-raw-zero-seek.patch"
     ./configure "${platform_flags[@]}" --arch="$architecture" --cc="$CC" \
         --extra-cflags="$ffmpeg_cflags -I../../prefix/include" --extra-ldflags="$LDFLAGS -L../../prefix/lib" \
         --pkg-config="$PKG_CONFIG" --pkg-config-flags=--static \
@@ -145,7 +146,7 @@ meson install -C "$work/dav1d" --no-rebuild
         --disable-ffplay --disable-avdevice --disable-everything \
         --enable-zlib --enable-lcms2 --enable-libwebp --enable-libdav1d \
         --enable-protocol=file,pipe \
-        --enable-demuxer=mov,matroska,avi,mpegts,mpegps,mpegvideo,asf,flv,ogg,mxf,ivf,dv,apng,gif,image2,image2pipe,webp_anim,image_jpeg_pipe,image_png_pipe,image_tiff_pipe,image_webp_pipe \
+        --enable-demuxer=mov,matroska,avi,h264,hevc,mpegts,mpegps,mpegvideo,asf,flv,ogg,mxf,ivf,dv,apng,gif,image2,image2pipe,webp_anim,image_jpeg_pipe,image_png_pipe,image_tiff_pipe,image_webp_pipe \
         --enable-parser=aac,ac3,av1,h263,h264,hevc,mjpeg,mpeg4video,mpegaudio,mpegvideo,opus,vc1,vorbis,vp8,vp9 \
         --enable-decoder=hevc,h264,libdav1d,vp8,vp9,mpeg1video,mpeg2video,mpeg4,msmpeg4v1,msmpeg4v2,msmpeg4v3,h263,h263i,h263p,wmv1,wmv2,wmv3,vc1,mjpeg,mjpegb,prores,dnxhd,dvvideo,theora,flv,ffv1,huffyuv,rawvideo,webp,webp_anim,gif,png,apng,tiff \
         --enable-encoder=mjpeg,png,rawvideo,libwebp,libwebp_anim \
